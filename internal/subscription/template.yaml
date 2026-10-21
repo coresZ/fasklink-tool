@@ -1,0 +1,342 @@
+# ==================== 基础配置（一般不用改） ====================
+mixed-port: 7890
+allow-lan: true
+bind-address: "*"
+mode: rule
+log-level: info
+unified-delay: true
+tcp-concurrent: true
+
+dns:
+  enable: true
+  ipv6: true
+  use-hosts: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  proxy-server-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver-policy:
+    "+.google.com": "https://dns.cloudflare.com/dns-query"
+    "+.googleapis.com": "https://dns.cloudflare.com/dns-query"
+    "+.googleapis.cn": "https://dns.cloudflare.com/dns-query"
+    "+.googlevideo.com": "https://dns.cloudflare.com/dns-query"
+    "+.gstatic.com": "https://dns.cloudflare.com/dns-query"
+    "+.youtube.com": "https://dns.cloudflare.com/dns-query"
+    "+.youtu.be": "https://dns.cloudflare.com/dns-query"
+    "+.facebook.com": "https://dns.cloudflare.com/dns-query"
+    "+.twitter.com": "https://dns.cloudflare.com/dns-query"
+    "+.x.com": "https://dns.cloudflare.com/dns-query"
+    "+.github.com": "https://dns.cloudflare.com/dns-query"
+    "+.githubusercontent.com": "https://dns.cloudflare.com/dns-query"
+    "+.openai.com": "https://dns.cloudflare.com/dns-query"
+    "+.chatgpt.com": "https://dns.cloudflare.com/dns-query"
+    "+.anthropic.com": "https://dns.cloudflare.com/dns-query"
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+    - tls://dot.pub:853
+    - tls://dns.alidns.com:853
+  fallback:
+    - https://dns.cloudflare.com/dns-query
+    - https://dns.google/dns-query
+    - tls://1.1.1.1:853
+    - tls://8.8.8.8:853
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+      - 0.0.0.0/8
+      - 10.0.0.0/8
+      - 100.64.0.0/10
+      - 127.0.0.0/8
+      - 169.254.0.0/16
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 224.0.0.0/4
+      - 240.0.0.0/4
+    domain:
+      - "+.google.com"
+      - "+.facebook.com"
+      - "+.youtube.com"
+      - "+.githubusercontent.com"
+      - "+.googlevideo.com"
+      - "+.googleapis.cn"
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+    - "*.localhost"
+    - "*.test"
+    - "localhost.ptlogin2.qq.com"
+    - 'cf.komect.net'
+    - '*.komect.net'
+    - 'ihr.hq.mogu'
+    - '*.hq.mogu'
+    - "+.stun.*.*"
+    - "+.stun.*.*.*"
+    - "+.stun.*.*.*.*"
+    - "lens.l.google.com"
+    - "*.srv.nintendo.net"
+    - "+.stun.playstation.net"
+    - "xbox.*.*.microsoft.com"
+    - "*.*.xboxlive.com"
+    - "+.msftncsi.com"
+    - "+.msftconnecttest.com"
+
+
+# ==================== 节点区域（下次只改这里） ====================
+# 命名规范：地区-序号（如 香港-01、台湾-01），策略组会自动匹配
+proxies:
+__PROXIES_BLOCK__
+
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "♻️ 自动选择"
+      - "🛡️ 故障转移"
+      - "🇭🇰 香港"
+      - "🇹🇼 台湾"
+      - "🇸🇬 新加坡"
+      - "🇯🇵 日本"
+      - "🇺🇸 美国"
+      - "🇬🇧 英国"
+      - "🇲🇾 马来西亚"
+      - "🇹🇷 土耳其"
+      - "🇦🇷 阿根廷"
+      - "🌏 亚洲自动"
+      - "🌍 欧美自动"
+      - DIRECT
+
+  - name: "🛑 广告拦截"
+    type: select
+    proxies: [REJECT, DIRECT, "🚀 节点选择"]
+
+  - name: "🔒 GFW 列表"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "🇭🇰 香港"
+      - "🇹🇼 台湾"
+      - "🇸🇬 新加坡"
+      - "🇯🇵 日本"
+      - "🇺🇸 美国"
+      - DIRECT
+
+  - name: "🤖 AI 平台"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "🇭🇰 香港"
+      - "🇹🇼 台湾"
+      - "🇸🇬 新加坡"
+      - "🇯🇵 日本"
+      - "🇺🇸 美国"
+      - DIRECT
+
+  - name: "🌍 海外域名"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "🇭🇰 香港"
+      - "🇹🇼 台湾"
+      - "🇸🇬 新加坡"
+      - "🇯🇵 日本"
+      - "🇺🇸 美国"
+      - DIRECT
+
+  # 自动选择：用 filter 自动匹配所有节点（推荐，节点增减不用改这里）
+  - name: "♻️ 自动选择"
+    type: url-test
+    include-all-proxies: true
+    exclude-filter: "(?i)(剩余|流量|套餐|到期|重置|官网|Traffic|Expire)"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🛡️ 故障转移"
+    type: fallback
+    include-all-proxies: true
+    exclude-filter: "(?i)(剩余|流量|套餐|到期|重置|官网|Traffic|Expire)"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    lazy: true
+
+  # 地区组：用 filter 按名称前缀自动匹配
+  - name: "🇭🇰 香港"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)香港"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇹🇼 台湾"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)台湾"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇸🇬 新加坡"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)新加坡"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇯🇵 日本"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)日本"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇺🇸 美国"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)美国"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇬🇧 英国"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)英国"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇲🇾 马来西亚"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)马来西亚"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇹🇷 土耳其"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)土耳其"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🇦🇷 阿根廷"
+    type: url-test
+    include-all-proxies: true
+    filter: "(?i)阿根廷"
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🌏 亚洲自动"
+    type: url-test
+    proxies: ["🇭🇰 香港","🇹🇼 台湾","🇸🇬 新加坡","🇯🇵 日本","🇲🇾 马来西亚"]
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: "🌍 欧美自动"
+    type: url-test
+    proxies: ["🇺🇸 美国","🇬🇧 英国","🇹🇷 土耳其","🇦🇷 阿根廷"]
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+
+# ==================== 规则（一般不用改） ====================
+rules:
+  # 1. 私有网络 / 局域网
+  - DOMAIN-SUFFIX,komect.net,DIRECT
+  - DOMAIN-SUFFIX,hq.mogu,DIRECT
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,localhost,DIRECT
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - IP-CIDR,0.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,224.0.0.0/4,DIRECT,no-resolve
+  - IP-CIDR,240.0.0.0/4,DIRECT,no-resolve
+
+  # 2. 广告拦截
+  - GEOSITE,category-ads-all,🛑 广告拦截
+  - GEOSITE,category-ads,🛑 广告拦截
+
+  # 3. AI 平台合集
+  - GEOSITE,openai,🤖 AI 平台
+  - DOMAIN-SUFFIX,openai.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,chatgpt.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,oaistatic.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,oaiusercontent.com,🤖 AI 平台
+  - GEOSITE,anthropic,🤖 AI 平台
+  - DOMAIN-SUFFIX,anthropic.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,claude.ai,🤖 AI 平台
+  - DOMAIN-SUFFIX,claudeusercontent.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,x.ai,🤖 AI 平台
+  - DOMAIN-SUFFIX,grok.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,gemini.google.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,bard.google.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,perplexity.ai,🤖 AI 平台
+  - DOMAIN-SUFFIX,cursor.sh,🤖 AI 平台
+  - DOMAIN-SUFFIX,cursor.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,groq.com,🤖 AI 平台
+  - DOMAIN-SUFFIX,huggingface.co,🤖 AI 平台
+  - DOMAIN-SUFFIX,hf.co,🤖 AI 平台
+
+  # 4. GFW 列表 + 常用海外
+  - GEOSITE,gfw,🔒 GFW 列表
+  - GEOSITE,google,🔒 GFW 列表
+  - GEOSITE,youtube,🔒 GFW 列表
+  - GEOSITE,github,🔒 GFW 列表
+  - GEOSITE,telegram,🔒 GFW 列表
+  - DOMAIN-SUFFIX,telegra.ph,🔒 GFW 列表
+  - DOMAIN-SUFFIX,telegram.org,🔒 GFW 列表
+  - IP-CIDR,91.108.4.0/22,🔒 GFW 列表,no-resolve
+  - IP-CIDR,149.154.160.0/20,🔒 GFW 列表,no-resolve
+  - IP-CIDR,120.232.181.162/32,🔒 GFW 列表,no-resolve
+  - IP-CIDR,180.163.150.162/32,🔒 GFW 列表,no-resolve
+
+  # 5. 中国域名 / 中国 IP（直连）
+  - GEOSITE,cn,DIRECT
+  - GEOIP,CN,DIRECT
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-SUFFIX,com.cn,DIRECT
+  - DOMAIN-SUFFIX,net.cn,DIRECT
+  - DOMAIN-SUFFIX,org.cn,DIRECT
+  - DOMAIN-SUFFIX,gov.cn,DIRECT
+  - DOMAIN-SUFFIX,edu.cn,DIRECT
+
+  # 6. 海外域名兜底
+  - GEOSITE,geolocation-!cn,🌍 海外域名
+
+  # 7. 最终兜底
+  - MATCH,🚀 节点选择

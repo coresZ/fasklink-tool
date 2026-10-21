@@ -1,0 +1,234 @@
+:root{
+  --bg:#0b1020;--panel:#111a2e;--field:#18233b;--line:#24324d;--text:#e8eefc;
+  --muted:#8ea0c4;--accent:#3b82f6;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;
+  --scroll-thumb:#2f4066;--scroll-thumb-hover:#3d5480;
+  font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+/* 滚动条：只美化 thumb，轨道一律透明。
+   页面有 color-scheme:dark，不显式声明 track 透明会回落成原生深色灰底轨道。
+   scrollbar-gutter 只用于锁版面、避免出现滚动条时内容横移，不承担美化。
+   两套语法必须分开写：Chromium 一旦看到 scrollbar-width，就会改用原生滚动条并
+   画出上下箭头按钮，::-webkit-scrollbar-button 压不住，所以用 @supports 隔离。 */
+@supports not selector(::-webkit-scrollbar){
+  html{scrollbar-color:var(--scroll-thumb) transparent;scrollbar-width:thin}
+}
+@supports selector(::-webkit-scrollbar){
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}
+  ::-webkit-scrollbar-button,::-webkit-scrollbar-button:single-button{display:none;width:0;height:0}
+  ::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:999px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
+}
+html{scrollbar-gutter:stable}
+/* 触屏设备隐藏滚动条（规则允许的唯一例外），避免窄屏被 10px 槽位挤占。 */
+@media (hover:none),(pointer:coarse){
+  html{scrollbar-width:none}
+  ::-webkit-scrollbar{display:none;width:0;height:0}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-size:14px}
+.hidden{display:none!important}
+a{color:var(--accent);text-decoration:none}
+.app{display:grid;grid-template-columns:210px minmax(0,1fr);min-height:100vh;max-width:1310px;margin-inline:auto}
+.side{position:sticky;top:0;height:100vh;background:#0e1628;border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column;gap:20px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+.logo{width:30px;height:30px;border-radius:9px;background:var(--accent);display:grid;place-items:center;color:#fff}
+.nav{display:flex;flex-direction:column;gap:4px}
+.nav-item{border:0;background:transparent;color:var(--muted);text-align:left;padding:10px 12px;border-radius:9px;cursor:pointer;font:inherit}
+.nav-item.active,.nav-item:hover{background:var(--field);color:#fff}
+.side-foot{margin-top:auto;border-top:1px solid var(--line);background:rgba(24,35,59,.45);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;font-size:12px;color:var(--muted);min-width:0}
+/* 固定高度：三行各锁 16px 行高 + 固定间距，文案变长只省略，不抖动布局。 */
+.session-status{display:flex;flex-direction:column;gap:4px;height:56px;justify-content:center}
+.statusline{display:flex;align-items:center;min-width:0;height:16px;line-height:16px}
+.statusline.sub{padding-left:14px}
+#stateText{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;color:var(--text)}
+/* 来源行与时间行分开：来源可省略，时间是短格式必然放得下，二者都不再挤在同一行。 */
+#subSource,#subStatus{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+/* 两个退出入口共用同一套按钮语言：同尺寸、同圆角、垂直居中；
+   危险等级靠配色区分——退出登录是中性弱化，退出服务是红底实心（会杀进程，最重）。 */
+.session-actions{display:flex;gap:8px;align-items:stretch}
+.session-actions .out,.quit{flex:1;display:inline-flex;align-items:center;justify-content:center;height:28px;border-radius:8px;padding:0 6px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
+.session-actions .out{border:1px solid var(--line);background:var(--field);color:var(--text)}
+.session-actions .out:hover{border-color:var(--muted);color:#fff}
+.quit{border:0;background:rgba(239,68,68,.16);color:var(--err);font-weight:600}
+.quit:hover{background:rgba(239,68,68,.28);color:#fca5a5}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-right:6px}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.err{background:var(--err)}
+.main{padding:22px 26px 50px;max-width:1100px}
+.topbar{background:linear-gradient(135deg,#15233f,#101a30);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:18px;min-height:132px}
+.topbar-head{display:flex;justify-content:space-between;align-items:center;font-weight:600;min-height:20px}
+.pct{color:var(--accent);min-width:4.5em;text-align:right;font-variant-numeric:tabular-nums}
+#traffic{min-height:94px;overflow-anchor:none}
+.traffic-summary{height:18px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-variant-numeric:tabular-nums}
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:12px;min-height:48px}
+.stat{background:var(--field);border-radius:10px;padding:9px;min-height:48px}
+.stat .k{font-size:11px;color:var(--muted)}.stat .v{font-size:13px;margin-top:3px;height:18px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.bar{height:8px;background:var(--field);border-radius:999px;overflow:hidden;margin-top:10px}
+.bar i{display:block;height:100%;background:var(--accent);transition:width .2s ease}
+.bar.warn i{background:var(--warn)}.bar.danger i{background:var(--err)}
+.sec{display:none;min-height:calc(100vh - 170px)}.sec.active{display:block}
+.sec-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px}
+h2{margin:0 0 4px;font-size:20px}.sec-head p{margin:0;color:var(--muted);font-size:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}.between{justify-content:space-between;margin-top:0}
+.label{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+.muted{font-size:12px;color:var(--muted)}
+#sourceMeta{display:block;width:100%;height:18px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;min-width:0}
+#sourceMeta:empty{visibility:hidden}
+/* Lock the source block to full row width so chip/meta text length never resizes the card. */
+.srcwrap{flex:1;min-width:0}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;min-height:30px;max-height:66px;overflow:auto;width:100%}
+/* Manual-URL row only appears for the manual source. It collapses to zero height
+   with a short transition, so switching sources animates instead of popping the
+   card (and leaves no reserved void when hidden). */
+#manualRow{display:flex;gap:8px;align-items:center;margin-top:10px;overflow:hidden;max-height:64px;
+  transition:max-height .18s ease,opacity .18s ease,margin-top .18s ease}
+#manualRow.gone{max-height:0;opacity:0;margin-top:0;pointer-events:none}
+#manualRow>input{flex:1;width:auto;min-width:0}
+.chips button,.ghost,.primary,button.sm{border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:9px;padding:8px 12px;cursor:pointer;font:inherit;font-size:12px}
+.chips button.on{border-color:var(--accent);background:rgba(59,130,246,.18);color:#fff}
+.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.ghost{background:transparent}.sm{padding:5px 9px}
+/* 表单卡片内统一节奏：分组块之间 14px，标签与它的输入框之间 5px。 */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.grid2 + .grid2,.grid2 + label,.grid2 + input,.grid2 + textarea{margin-top:14px}
+input,select,textarea{display:block;background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;font:inherit;width:100%;outline:none;margin:0}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+label{display:block;margin:14px 0 5px;font-size:12px;color:var(--muted)}
+input + label,select + label,textarea + label{margin-top:14px}
+.card > .label:first-child,.card > label:first-child{margin-top:0}
+.card > .grid2:first-child,.card > input:first-child,.card > textarea:first-child{margin-top:0}
+textarea{min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.addrGrid{display:grid;grid-template-columns:200px minmax(0,1fr);gap:18px;align-items:center;margin-top:10px;min-height:236px}
+.qrbox{display:flex;flex-direction:column;align-items:center;gap:6px}
+#qr{width:180px;height:180px;background:#fff;border-radius:12px;padding:10px;display:grid;place-items:center}
+#qr svg{width:100%;height:100%}
+.linkbox{display:flex;flex-direction:column;gap:9px;min-width:0}
+.linkbox .row{margin-top:0}
+.urlrow{display:flex;gap:8px;align-items:center;background:var(--field);border-radius:9px;padding:9px 11px}
+.urlrow code{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#93c5fd;font-size:12px}
+.hint{font-size:12px;color:var(--muted);margin-top:8px;height:18px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-variant-numeric:tabular-nums}
+.hint:empty{visibility:hidden}
+.hint.err{color:var(--err)}.hint.ok{color:var(--ok)}
+.note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+.nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;height:330px;overflow:auto;margin-top:10px;align-content:start;overflow-anchor:none}
+.nodes:empty::before{content:"暂无节点";color:var(--muted);font-size:12px;padding:8px 2px}
+.node{background:var(--field);border-radius:8px;padding:7px 9px;font-size:12px;display:flex;flex-direction:column;gap:2px;min-height:42px}
+.node .srv{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{display:inline-block;background:var(--field);border-radius:999px;padding:1px 8px;font-size:11px;color:var(--muted);min-width:2.2em;text-align:center;font-variant-numeric:tabular-nums}
+#nodeCount{width:3.6em;min-width:3.6em;overflow:hidden}
+/* ---- 账号 ---- */
+/* 单列全宽 + 两行压缩结构：第 1 行 徽章+名称+状态+操作，第 2 行 标识/错误。
+   高度 = padding 8*2 + 行1 20px + gap 5 + 行2 16px = 65px（1440/1024/768 一致）。 */
+.acclist{display:flex;flex-direction:column;gap:7px}
+/* 宽屏两行布局：
+   行1 = 名称+状态（左） | 操作按钮（右）
+   行2 = 标识/错误文案（跨两列）
+   .accops 已从 .acctop 移出（窄屏需要它独立成行），这里用 grid 把它放回行1右侧。 */
+.accitem{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"top ops" "meta meta";
+  align-items:center;column-gap:10px;row-gap:5px;
+  background:var(--field);border-radius:9px;padding:8px 12px;
+  border-left:3px solid var(--line);min-width:0}
+.accitem.pw{border-left-color:var(--accent)}
+.accitem.link{border-left-color:var(--muted)}
+.accitem.current{background:rgba(59,130,246,.10);border-color:var(--line);border-left-color:var(--accent)}
+.acctop{grid-area:top;display:flex;align-items:center;gap:10px;min-width:0}
+.acctop .accname{flex:1;min-width:0}
+.accname{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:20px;line-height:20px;display:flex;align-items:center;gap:8px;min-width:0}
+/* 第 2 行：标识信息或错误文案，单行锁 16px，有错/无错高度一致。 */
+.accmeta{grid-area:meta;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:16px;line-height:16px;min-width:0}
+.accmeta .err-text{color:var(--err)}
+.acctype{flex:none;width:16px;height:16px;border-radius:5px;display:inline-grid;place-items:center;
+  font-size:10px;line-height:16px;background:rgba(59,130,246,.18);color:#93c5fd;font-weight:700}
+.accitem.link .acctype{background:rgba(142,160,196,.15);color:var(--muted)}
+.accstate{flex:none;font-size:11px;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.accstate.st-current{background:rgba(34,197,94,.14);color:var(--ok)}
+.accstate.st-ok{background:rgba(59,130,246,.14);color:#93c5fd}
+.accstate.st-pending{background:rgba(245,158,11,.14);color:var(--warn)}
+.accstate.st-error{background:rgba(239,68,68,.14);color:var(--err)}
+/* 操作层级：激活(实心主按钮) / 编辑(ghost) / 删除(红字描边)，同一行同高 28px。
+   激活位 min-width 锁死：激活态与「当前」态文案边框不同，不定宽会在切换时横移。 */
+.accops{grid-area:ops;display:flex;gap:6px;align-items:center;flex:none}
+.accops .act{height:28px;min-width:52px;padding:0 12px;border:0;border-radius:8px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap;text-align:center;
+  background:var(--accent);color:#fff}
+.accops .act:hover{filter:brightness(1.12)}
+.accops .act:disabled{background:transparent;border:1px solid var(--line);color:var(--ok);cursor:default;filter:none}
+.accops .edit{height:28px;padding:0 12px;background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--text);cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
+.accops .edit:hover{border-color:var(--muted);color:#fff}
+.accops .delete{height:28px;padding:0 12px;background:transparent;color:var(--err);border:1px solid var(--line);border-radius:8px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
+.accops .delete:hover{border-color:rgba(239,68,68,.5)}
+.acc-empty{border:1px dashed var(--line);border-radius:9px;padding:26px 12px;text-align:center;color:var(--muted);font-size:12px}
+/* 账号行内部所有块级子项都不允许撑破容器，否则窄屏会横向溢出。 */
+.accitem>*{min-width:0}
+.accname>span{min-width:0}
+/* 表单：类型切换用 max-height 过渡收展，卡片高度平滑变化。 */
+.type-switch{display:inline-flex;gap:4px;padding:3px;background:var(--field);border-radius:9px}
+.type-switch button{border:0;background:transparent;color:var(--muted);border-radius:7px;padding:5px 12px;cursor:pointer;font:inherit;font-size:12px}
+.type-switch button.on{background:rgba(59,130,246,.18);color:#fff}
+.form-sec{overflow:hidden;max-height:220px;opacity:1;transition:max-height .22s ease,opacity .22s ease,margin-top .22s ease}
+.form-sec.gone{max-height:0;opacity:0;pointer-events:none;margin-top:0!important}
+.form-sec > label:first-child,.form-sec > *:first-child{margin-top:0}
+.pw-state-note{font-size:11px;color:var(--warn);margin-top:5px;height:16px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 自写确认弹窗：不用原生 confirm。 */
+.modal-mask{position:fixed;inset:0;background:rgba(5,9,20,.66);display:grid;place-items:center;z-index:100;padding:20px;
+  animation:maskIn .12s ease-out}
+.modal{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;
+  box-shadow:0 24px 60px rgba(0,0,0,.55);animation:modalIn .16s ease-out}
+.modal-title{font-size:15px;font-weight:600;color:var(--text)}
+.modal-body{margin-top:8px;font-size:12px;line-height:1.6;color:var(--muted)}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+.modal-actions button{height:30px;padding:0 14px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.modal-cancel{background:transparent;border:1px solid var(--line);color:var(--text)}
+.modal-cancel:hover{border-color:var(--muted);color:#fff}
+.modal-ok{background:var(--accent);border:1px solid var(--accent);color:#fff}
+.modal-ok:hover{filter:brightness(1.1)}
+.modal-ok.danger{background:rgba(239,68,68,.16);border-color:rgba(239,68,68,.55);color:var(--err);font-weight:600}
+.modal-ok.danger:hover{background:rgba(239,68,68,.26);border-color:var(--err)}
+.modal-ok:focus-visible,.modal-cancel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@keyframes maskIn{from{opacity:0}to{opacity:1}}
+@keyframes modalIn{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.modal-mask,.modal{animation:none}}
+.login{min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 30% 10%,#172554,#0b1020 60%)}
+.login form{width:min(360px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px}
+.login h1{margin:0 0 4px;font-size:24px}.login p{margin:0 0 18px;color:var(--muted)}
+.login button{width:100%;margin-top:12px;height:40px}
+.check{display:flex;gap:7px;align-items:center;color:var(--muted);font-size:12px}
+.check input{width:auto}
+pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--muted);max-height:300px;overflow:auto;margin:0}
+/* ---- 解密工具 ---- */
+/* 输入框定位为「单条链接输入」：固定 2 行高，wrap=off + 横向滚动，
+   长 URL 一行完整可读，不折行断开。 */
+.tool-input{min-height:0;height:58px;line-height:1.5;overflow-x:auto;white-space:pre;word-break:normal;overflow-wrap:normal}
+/* 结果框是页面核心输出：给足高度内部滚动，行高按 YAML 阅读节奏放宽。 */
+.tool-yaml{min-height:0;height:440px;line-height:1.55;overflow:auto;white-space:pre;word-break:normal;overflow-wrap:normal;color:#c9d6f2}
+/* 结果信息头：标签 + 统计 + 复制按钮同排，沿用表单节奏。 */
+.yaml-head{display:flex;align-items:baseline;gap:10px;margin-bottom:7px}
+.yaml-head .label{margin-bottom:0}
+.tool-meta{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;align-self:center}
+@media(max-width:760px){.tool-yaml{height:340px}}
+/* Second, read-only pane: the provider's own output before the Clash template.
+   Slightly shorter than the converted pane since it is for comparison, not editing. */
+.raw-head{margin-top:18px}
+.raw-yaml{height:300px;color:var(--muted)}
+@media(max-width:760px){.raw-yaml{height:240px}}
+/* Variant switch for the subscription address: optimized (templated) vs raw. */
+.variant-tabs{display:inline-flex;gap:4px;padding:3px;margin-top:10px;background:var(--field);border-radius:9px}
+.variant-tab{border:0;background:transparent;color:var(--muted);border-radius:7px;padding:5px 12px;cursor:pointer;font:inherit;font-size:12px}
+.variant-tab.on{background:rgba(59,130,246,.18);color:#fff}
+@media(max-width:760px){.app{grid-template-columns:minmax(0,1fr)}.side{position:static;height:auto}.nav{flex-direction:row;overflow:auto}.side-foot{margin-top:0;border-radius:12px}.session-status{flex-direction:row;flex-wrap:wrap;gap:10px;height:auto;justify-content:flex-start}.statusline.sub{padding-left:0}#subSource,#subStatus{flex:0 0 auto}.session-actions{flex-wrap:wrap}.main{padding:14px}.addrGrid{grid-template-columns:1fr}.grid2{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+/* .sec-head 是 flex，左侧文案块没有 min-width:0 时不会收缩，窄屏下会顶宽页面。 */
+.sec-head>div:first-child{flex:1;min-width:0}
+.sec-head>div:first-child p{overflow-wrap:anywhere}
+/* ≤480：名称行 → 标识/错误行 → 操作行。.accops 原本嵌在 .acctop 内部，
+   直接调 order 无法越过 .accmeta，用 display:contents 拆掉这层再排序。 */
+@media(max-width:480px){
+  /* 窄屏改用纵向堆叠：名称+状态 → 标识/错误 → 操作。
+     覆盖宽屏的 grid-template-areas，让 .accops 落到第三行。 */
+  .accitem{display:flex;flex-direction:column;align-items:stretch;row-gap:0;min-width:0}
+  .acctop{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
+  .accname{flex:1 1 0;min-width:0;height:22px;max-height:22px;line-height:22px;overflow:hidden;justify-content:flex-start}
+  .accstate{flex:0 0 auto;margin-left:auto}
+  .accmeta{margin-top:5px}
+  .accops{flex:1 1 100%;display:flex;gap:6px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--line);margin-top:8px}
+  .accops .act,.accops .edit,.accops .delete{flex:1;min-width:0;padding:0 6px;text-align:center}
+}
