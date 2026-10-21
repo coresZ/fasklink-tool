@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# FastLink-tool 一键开发启动（Linux / macOS 双击或 ./dev）
+exec "$(dirname -- "$0")/scripts/dev.sh" "$@"

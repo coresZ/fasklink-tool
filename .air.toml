@@ -1,0 +1,9 @@
+root = "."
+tmp_dir = ".air"
+
+[build]
+  cmd = "go build -o .air/fastlink-tool-dev.exe ./cmd/fastlink-tool"
+  bin = ".air/fastlink-tool-dev.exe --dev --root .run-dev --port 8787 --no-open"
+  include_ext = ["go", "yaml"]
+  exclude_dir = [".git", "dist", ".run", ".run-dev", ".run-dev-final", ".air", "docs"]
+  delay = 300

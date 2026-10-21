@@ -1,0 +1,21 @@
+# 构建产物
+dist/
+*.exe
+
+# 开发状态
+.run/
+.run-dev/
+.dev/
+
+# Go 工具
+.air/
+
+# 旧版 Node 产物（迁移后仅保留在本机工作区）
+node_modules/
+build/
+apk/
+
+# 日志与系统文件
+*.log
+Thumbs.db
+.DS_Store
