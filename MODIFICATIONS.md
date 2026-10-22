@@ -564,6 +564,79 @@ API 全链路（PowerShell，9 项）—— 全部 PASS
 
 **过程记录**：验证脚本的清理条件误用了 `example.com` 匹配，把我自己建的测试链接账号（label 自动取自 URL 主机名 `update.glados-config.com`）当成了残留。已核实原账号 `demo` 未受影响，并单独删除该测试账号。
 
+## 2026-10-22（第 3 轮）
+
+### 防火墙：规则脚本 + 面板内只读自检
+
+**功能**：解决「局域网连不上，但不知道是不是防火墙挡的」。提供一键创建规则的管理脚本，并在设置页显示可达性自检。
+
+**背景**：Windows 防火墙在专用/公用配置文件下默认拦截入站。面板监听 `0.0.0.0` 是为了让手机扫码拉订阅，但没有对应规则时会被静默拦截，用户看不到任何错误。
+
+**实现（只做 A+B，不做程序内提权改防火墙）**：
+
+- `scripts/firewall.ps1`：`-Apply` / `-Remove` / `-Status` 三个动作。
+  - 规则限定 `RemoteAddress=LocalSubnet`，不向公网开放；
+  - 绑定 `-Program` 到具体 exe 路径，避免端口被其他程序蹭用；
+  - 只建入站规则。Windows 出站默认允许，程序只访问面板 API 与订阅域名，额外出站规则只会扩大攻击面；
+  - 幂等：重复 `-Apply` 先删旧规则再建，不会堆叠；
+  - 非管理员执行 `-Apply` 明确拒绝并提示提权方式，不静默失败。
+- `internal/platform/firewall_windows.go`：`InspectFirewall()` 只读自检。用 **netsh** 而非 `Get-NetFirewall*` cmdlet，原因见下文性能一节。规则名精确匹配 `FastLink-tool Panel`。
+- `internal/platform/firewall_other.go`：非 Windows 返回 `supported=false`，不假装知道 ufw/firewalld/pf 的状态。
+- `GET /api/v1/net-diag`：返回监听地址、端口、局域网 IP、防火墙配置文件、规则是否存在、是否可达、以及一句可操作提示。带 6 秒超时，避免 PowerShell/net 卡住拖死设置页。
+- 设置页新增「网络可达性」卡片：五行只读数据 + 状态色提示 + 「重新检测」按钮。
+
+**性能问题的发现与修正（重要）**：
+
+首版用 PowerShell 查询防火墙，实测**单次请求 8456ms**，前端一直卡在「检测中…」。逐层定位：
+
+```text
+PowerShell 单次启动          ~2444ms
+netsh advfirewall show       ~205ms
+netsh rule query             ~180ms
+```
+
+改为 netsh 后：冷启动 563ms，命中缓存 61ms。同时加了 30 秒 TTL 缓存（`InspectFirewall` 带锁），并把探测放进带超时的 goroutine。
+
+**一个必须记录的误报**：
+
+首版规则匹配用了 `DisplayName -like '*FastLink*'`，实测 `ruleFound=true` 但实际并不存在面板规则——它匹配到了 FastLink VPN 客户端的三条规则（`sing-tun`、`FastLink_Lite Main In`、`FastLink_Lite Core In`）。这会让用户以为已放行，实际没有。已改为精确匹配 `FastLink-tool Panel`。
+
+**涉及文件**：`scripts/firewall.ps1`（新增）、`internal/platform/firewall_windows.go`（新增）、`internal/platform/firewall_other.go`（新增）、`internal/httpapi/server.go`（`netDiag` 端点）、`web/index.html`（自检卡片）、`web/style.css`（`.netdiag` 系列）、`web/app.js`（`loadNetDiag`）。
+
+**验证基线**：
+
+```text
+脚本
+  -Status        正常显示三档 profile 状态、规则缺失提示、端口监听（:: 8787）
+  -Apply 非管理员 明确拒绝，exit=1
+  -Apply 提权     规则创建成功：Inbound/Allow/Any profile/TCP 8787/LocalSubnet/绑定 cmd.exe（测试用）
+  规则生效后自检  ruleFound=True、reachable=True
+  -Remove 提权    规则删除，remaining=0，自检回到 ruleFound=False / reachable=False
+
+接口性能（连续 4 次）
+  #1 563ms（冷启动）  #2 61ms  #3 56ms  #4 64ms（缓存命中）
+  对照 /api/v1/config 41ms
+
+自检数据正确性
+  profiles = Domain（域配置启用，专用/公用关闭）
+  ruleFound = False，reachable = False，提示文案指向 firewall.ps1 -Apply
+
+前端渲染
+  5 行数据全部显示且无截断，警告行黄色，点击「重新检测」重新拉取
+
+回归
+  1920/1440/1280/1100/768：侧栏与内容间隙 0，左右留白对称，无横向溢出
+  轮询 6 秒无漂移，节点列表 scrollTop 保持 240
+  三页提示行超长文案：卡片高度 delta 0/0
+  go test ./... / go vet / gofmt / node --check 通过
+```
+
+**已知限制**：
+
+- netsh 输出是本地化的，`enabledProfiles()` 同时匹配中英文关键字（域/Domain、专用/Private、公用/Public、启用/On、关闭/Off）。非中英文系统可能需要补充。
+- 自检只判断「有无面板规则」，不校验规则的端口/程序是否与实际一致。用户手改过规则时可能显示已存在但实际不匹配。
+- 程序内不做任何防火墙修改：静默改防火墙需要管理员清单，会让每次启动弹 UAC，并扩大攻击面。
+
 ## 已知取舍
 
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
