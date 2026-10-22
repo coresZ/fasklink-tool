@@ -37,10 +37,24 @@ go run ./cmd/fastlink-tool --dev --root .run-dev --port 8787 --no-open
 ## 构建
 
 ```powershell
-.\scripts\build.ps1 -Version 1.0.0
+.\scripts\build.ps1 -Version 1.1.0
 ```
 
 产物：`dist/fastlink-tool.exe`（Windows x64，单文件，无控制台）。
+
+## 局域网访问与防火墙
+
+面板监听 `0.0.0.0` 时，Windows 防火墙在专用/公用配置文件下默认拦截入站连接。需要放行时（管理员 PowerShell）：
+
+```powershell
+.\scripts\firewall.ps1 -Status   # 只读检查，无需管理员
+.\scripts\firewall.ps1 -Apply    # 创建入站规则（仅本地子网，绑定本程序）
+.\scripts\firewall.ps1 -Remove   # 撤销
+```
+
+规则限定 `RemoteAddress=LocalSubnet` 且绑定 exe 路径，公网无法访问，端口也不会被其他程序蹭用。
+
+设置页的「网络可达性」卡片会显示当前监听地址、局域网 IP、防火墙配置文件与规则状态。该自检**只读**，不会修改防火墙——静默改防火墙需要管理员清单，会让每次启动弹 UAC。
 
 ## 当前能力
 

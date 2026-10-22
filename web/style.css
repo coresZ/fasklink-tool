@@ -111,6 +111,14 @@ textarea{min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monos
 .hint:empty{visibility:hidden}
 .hint.err{color:var(--err)}.hint.ok{color:var(--ok)}
 .note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+/* 网络可达性自检：只读诊断块。行高固定、值可省略，避免长地址撑破卡片。 */
+.netdiag{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.netdiag-row{display:flex;gap:10px;align-items:baseline;min-width:0;height:18px;line-height:18px}
+.netdiag-row .k{flex:0 0 76px;font-size:11px;color:var(--muted)}
+.netdiag-row .v{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.netdiag-note{margin-top:6px;font-size:12px;line-height:1.6;color:var(--muted)}
+.netdiag-note.ok{color:var(--ok)}
+.netdiag-note.warn{color:var(--warn)}
 .nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;height:330px;overflow:auto;margin-top:10px;align-content:start;overflow-anchor:none}
 .nodes:empty::before{content:"暂无节点";color:var(--muted);font-size:12px;padding:8px 2px}
 .node{background:var(--field);border-radius:8px;padding:7px 9px;font-size:12px;display:flex;flex-direction:column;gap:2px;min-height:42px}

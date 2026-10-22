@@ -182,6 +182,15 @@
         <div class="row"><button id="btnSaveCfg" class="primary">保存</button><button id="btnLogs" class="ghost">查看日志</button></div>
         <div id="cfgHint" class="hint"></div>
       </div>
+      <div class="card">
+        <div class="row between">
+          <div class="label">网络可达性</div>
+          <button id="btnNetDiag" class="ghost sm">重新检测</button>
+        </div>
+        <div id="netDiagBody" class="netdiag">
+          <div class="muted">尚未检测</div>
+        </div>
+      </div>
       <div id="logCard" class="card hidden"><div class="label">日志</div><pre id="logText"></pre></div>
     </section>
   </main>

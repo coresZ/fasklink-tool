@@ -554,6 +554,33 @@ async function loadConfig() {
   $("cfgDomains").value = (cfg.domains || []).join(", ");
 }
 
+// 网络可达性自检：只读，不会改动防火墙。结果用于提示「局域网为什么连不上」。
+async function loadNetDiag() {
+  const box = $("netDiagBody");
+  setText(box, "检测中…");
+  try {
+    const d = await api("/api/v1/net-diag");
+    const fw = d.firewall || {};
+    const profiles = (fw.profilesEnabled || []).join(" / ") || "无（防火墙已关闭）";
+    const rows = [
+      ["监听地址", d.listenHost === "0.0.0.0" ? "所有网卡（局域网 + 本机）" : "仅本机"],
+      ["端口", String(d.port)],
+      ["局域网地址", (d.lan || []).join(" / ") || "未检测到"],
+      ["防火墙", fw.supported ? profiles : "当前平台不支持自检"],
+      ["面板规则", fw.supported ? (fw.ruleFound ? "已存在" : "不存在") : "—"],
+    ];
+    box.innerHTML = rows
+      .map(([k, v]) => `<div class="netdiag-row"><span class="k">${escapeHTML(k)}</span><span class="v" title="${escapeHTML(v)}">${escapeHTML(v)}</span></div>`)
+      .join("");
+    const note = document.createElement("div");
+    note.className = "netdiag-note " + (d.reachable ? "ok" : "warn");
+    note.textContent = d.hint || "";
+    box.appendChild(note);
+  } catch (err) {
+    setText(box, err.message);
+  }
+}
+
 async function saveConfig() {
   const body = {
     host: $("cfgHost").value,
@@ -658,7 +685,7 @@ for (const btn of document.querySelectorAll("[data-sec]")) {
     btn.classList.add("active");
     $("sec-" + btn.dataset.sec).classList.add("active");
     if (btn.dataset.sec === "accounts") { loadAccounts().then(renderAccounts).catch(() => {}); }
-    if (btn.dataset.sec === "adv") { loadConfig().catch((e) => setHint("cfgHint", e.message)); }
+    if (btn.dataset.sec === "adv") { loadConfig().catch((e) => setHint("cfgHint", e.message)); loadNetDiag(); }
   };
 }
 
@@ -701,6 +728,7 @@ $("btnAccTest").onclick = verifyAccount;
 $("btnCancelEdit").onclick = () => { exitEditMode(); };
 $("btnSaveCfg").onclick = saveConfig;
 $("btnLogs").onclick = showLogs;
+$("btnNetDiag").onclick = loadNetDiag;
 $("btnQuit").onclick = async () => {
   if (!confirm("退出 FastLink-tool 服务？")) return;
   await fetch("/api/v1/quit", { method: "POST" });

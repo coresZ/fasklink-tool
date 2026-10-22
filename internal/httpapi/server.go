@@ -19,6 +19,7 @@ import (
 
 	"fastlink-tool/internal/config"
 	"fastlink-tool/internal/model"
+	"fastlink-tool/internal/platform"
 	"fastlink-tool/internal/service"
 )
 
@@ -50,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/decrypt", s.auth(s.decrypt))
 	mux.HandleFunc("POST /api/v1/account", s.auth(s.tempAccount))
 	mux.HandleFunc("GET /api/v1/config", s.auth(s.configGet))
+	mux.HandleFunc("GET /api/v1/net-diag", s.auth(s.netDiag))
 	mux.HandleFunc("POST /api/v1/config", s.auth(s.configPost))
 	mux.HandleFunc("GET /api/v1/logs", s.auth(s.logs))
 	mux.HandleFunc("POST /api/v1/quit", s.auth(s.quit))
@@ -437,6 +439,57 @@ func (s *Server) tempAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) configGet(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.Config)
+}
+
+// netDiag reports whether LAN devices are likely able to reach the panel. Read-only:
+// it never modifies firewall state, because doing so would require elevation and the
+// program should not silently widen the host's attack surface.
+func (s *Server) netDiag(w http.ResponseWriter, _ *http.Request) {
+	listening := s.Config.Host == "0.0.0.0"
+	lan := config.LANAddresses()
+
+	// Firewall probing shells out to PowerShell (~2s). Run it with a deadline so a
+	// hung or missing PowerShell cannot stall the settings page; the UI shows an
+	// "unknown" state instead of hanging forever.
+	type result struct{ info platform.FirewallInfo }
+	ch := make(chan result, 1)
+	go func() { ch <- result{platform.InspectFirewall(s.Config.Port)} }()
+
+	var fw platform.FirewallInfo
+	select {
+	case r := <-ch:
+		fw = r.info
+	case <-time.After(6 * time.Second):
+		fw = platform.FirewallInfo{Supported: false, Detail: "防火墙检测超时。"}
+	}
+
+	reachable := listening && (len(fw.ProfilesEnabled) == 0 || fw.RuleFound || !fw.Supported)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"listenHost": s.Config.Host,
+		"port":       s.Config.Port,
+		"lanOnly":    !listening,
+		"lan":        lan,
+		"firewall":   fw,
+		"reachable":  reachable,
+		"hint":       reachabilityHint(listening, fw, lan),
+	})
+}
+
+func reachabilityHint(listening bool, fw platform.FirewallInfo, lan []string) string {
+	if !listening {
+		return "当前仅监听本机，局域网设备无法访问。需要时把「监听范围」改为「局域网 + 本机」。"
+	}
+	if !fw.Supported {
+		return "已监听所有网卡；请自行确认系统防火墙放行了该端口。"
+	}
+	if len(fw.ProfilesEnabled) == 0 {
+		return "已监听所有网卡，防火墙已关闭，局域网可直接访问。"
+	}
+	if fw.RuleFound {
+		return "已监听所有网卡，且防火墙存在面板入站规则。"
+	}
+	return "已监听所有网卡，但防火墙没有面板入站规则，局域网设备可能被拦截。以管理员身份运行 scripts\\firewall.ps1 -Apply 创建规则。"
 }
 
 func (s *Server) configPost(w http.ResponseWriter, r *http.Request) {
