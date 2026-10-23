@@ -156,7 +156,7 @@ proxy-groups:
   - name: "♻️ 自动选择"
     type: url-test
     include-all-proxies: true
-    exclude-filter: "(?i)(剩余|流量|套餐|到期|重置|官网|Traffic|Expire)"
+    filter: '(?i)^(?!.*(剩余|流量|套餐|到期|重置|官网|订阅|倍率|续费|流量包|Traffic|Expire|Reset|Renew|Website|Official|剩余流量|已用|总量|月付|年付|CF-|\.asia|\b[0-9]+\s*(GB|TB)\b|\b[0-9]+\s*天\b)).*$'
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -165,7 +165,7 @@ proxy-groups:
   - name: "🛡️ 故障转移"
     type: fallback
     include-all-proxies: true
-    exclude-filter: "(?i)(剩余|流量|套餐|到期|重置|官网|Traffic|Expire)"
+    filter: '(?i)^(?!.*(剩余|流量|套餐|到期|重置|官网|订阅|倍率|续费|流量包|Traffic|Expire|Reset|Renew|Website|Official|剩余流量|已用|总量|月付|年付|CF-|\.asia|\b[0-9]+\s*(GB|TB)\b|\b[0-9]+\s*天\b)).*$'
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     lazy: true
@@ -174,7 +174,7 @@ proxy-groups:
   - name: "🇭🇰 香港"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)香港"
+    filter: "(?i)(香港|Hong.?Kong|🇭🇰|(^|[^A-Za-z])HK([^A-Za-z]|$))"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -183,7 +183,7 @@ proxy-groups:
   - name: "🇹🇼 台湾"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)台湾"
+    filter: "(?i)(台湾|台灣|Taiwan|🇹🇼|(^|[^A-Za-z])TW([^A-Za-z]|$))"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -192,7 +192,7 @@ proxy-groups:
   - name: "🇸🇬 新加坡"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)新加坡"
+    filter: "(?i)(新加坡|Singapore|🇸🇬|(^|[^A-Za-z])SG([^A-Za-z]|$))"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -201,7 +201,7 @@ proxy-groups:
   - name: "🇯🇵 日本"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)日本"
+    filter: "(?i)(日本|Japan|🇯🇵|(^|[^A-Za-z])JP([^A-Za-z]|$))"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -210,7 +210,7 @@ proxy-groups:
   - name: "🇺🇸 美国"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)美国"
+    filter: "(?i)(美国|美國|United.?States|USA|🇺🇸|(^|[^A-Za-z])US([^A-Za-z]|$))"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -219,7 +219,7 @@ proxy-groups:
   - name: "🇬🇧 英国"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)英国"
+    filter: "(?i)(英国|英國|United.?Kingdom|Britain|UK|🇬🇧)"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -228,7 +228,7 @@ proxy-groups:
   - name: "🇲🇾 马来西亚"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)马来西亚"
+    filter: "(?i)(马来西亚|Malaysia|🇲🇾|(^|[^A-Za-z])MY([^A-Za-z]|$))"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -237,7 +237,7 @@ proxy-groups:
   - name: "🇹🇷 土耳其"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)土耳其"
+    filter: "(?i)(土耳其|Turkey|Türkiye|🇹🇷)"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -246,7 +246,7 @@ proxy-groups:
   - name: "🇦🇷 阿根廷"
     type: url-test
     include-all-proxies: true
-    filter: "(?i)阿根廷"
+    filter: "(?i)(阿根廷|Argentina|🇦🇷)"
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     tolerance: 50
@@ -287,11 +287,289 @@ rules:
   - IP-CIDR,224.0.0.0/4,DIRECT,no-resolve
   - IP-CIDR,240.0.0.0/4,DIRECT,no-resolve
 
-  # 2. 广告拦截
+  # 2.1 中国金融（静态本地规则，直连；放在宽泛中国规则之前）
+  - DOMAIN,m.10jqka.com.cn,DIRECT
+  - DOMAIN,t.10jqka.com.cn,DIRECT
+  - DOMAIN,msv6.wosms.cn,DIRECT
+  - DOMAIN-SUFFIX,0033.com,DIRECT
+  - DOMAIN-SUFFIX,hexin.cn,DIRECT
+  - DOMAIN-SUFFIX,10jqka.com.cn,DIRECT
+  - DOMAIN-SUFFIX,iwencai.com,DIRECT
+  - DOMAIN-SUFFIX,thsi.cn,DIRECT
+  - DOMAIN-SUFFIX,tdx.com.cn,DIRECT
+  - DOMAIN-SUFFIX,gw.com.cn,DIRECT
+  - DOMAIN-SUFFIX,hexun.com,DIRECT
+  - DOMAIN-SUFFIX,myhexun.com,DIRECT
+  - DOMAIN-SUFFIX,soumoney.com.cn,DIRECT
+  - DOMAIN-SUFFIX,thsbx.com,DIRECT
+  - DOMAIN-SUFFIX,ticang.com,DIRECT
+  - DOMAIN-SUFFIX,51ifind.com,DIRECT
+  - DOMAIN-SUFFIX,5ifund.com,DIRECT
+  - DOMAIN-SUFFIX,yingfund.net,DIRECT
+  - DOMAIN-SUFFIX,myhexin.com,DIRECT
+  - DOMAIN-SUFFIX,123ths.com,DIRECT
+  - DOMAIN-SUFFIX,ths123.com,DIRECT
+  - DOMAIN-SUFFIX,huntgold.cn,DIRECT
+  - DOMAIN-SUFFIX,thsbaoxian.net,DIRECT
+  - DOMAIN-SUFFIX,touzime.net,DIRECT
+  - DOMAIN-SUFFIX,hithink.com,DIRECT
+  - DOMAIN-SUFFIX,myhithink.com,DIRECT
+  - DOMAIN-SUFFIX,zhifutech.com,DIRECT
+  - DOMAIN-SUFFIX,aicubes.cn,DIRECT
+  - DOMAIN-SUFFIX,thsyun.com,DIRECT
+  - DOMAIN-SUFFIX,voiceclub.cn,DIRECT
+  - DOMAIN-SUFFIX,gtimg.cn,DIRECT
+  - DOMAIN-SUFFIX,sinajs.cn,DIRECT
+  - DOMAIN-SUFFIX,hxkba.com,DIRECT
+  - DOMAIN-SUFFIX,yongginbao.com.cn,DIRECT
+  - DOMAIN-SUFFIX,ip-api.com,DIRECT
+  - DOMAIN-SUFFIX,zhangle.com,DIRECT
+  - DOMAIN-SUFFIX,htsc.com,DIRECT
+  - DOMAIN-SUFFIX,htsc.com.cn,DIRECT
+  - DOMAIN-SUFFIX,htzq.com.cn,DIRECT
+  - DOMAIN-SUFFIX,zhangleglobal.com,DIRECT
+  - DOMAIN-SUFFIX,ihtfin.com,DIRECT
+  - DOMAIN-SUFFIX,cmpassport.com,DIRECT
+  - DOMAIN-SUFFIX,finet.com.cn,DIRECT
+  - DOMAIN-SUFFIX,roadshowing.com,DIRECT
+  - DOMAIN-SUFFIX,1234567.com.cn,DIRECT
+  - DOMAIN-SUFFIX,95021.com,DIRECT
+  - DOMAIN-SUFFIX,caifutong.com.cn,DIRECT
+  - DOMAIN-SUFFIX,caimi.cn,DIRECT
+  - DOMAIN-SUFFIX,caimi.com.cn,DIRECT
+  - DOMAIN-SUFFIX,dfcfs.cn,DIRECT
+  - DOMAIN-SUFFIX,dfcfs.com,DIRECT
+  - DOMAIN-SUFFIX,dfcfw.com,DIRECT
+  - DOMAIN-SUFFIX,dingqibao.cn,DIRECT
+  - DOMAIN-SUFFIX,dingqibao.com,DIRECT
+  - DOMAIN-SUFFIX,dingqibao.com.cn,DIRECT
+  - DOMAIN-SUFFIX,dongfanglicaishi.com,DIRECT
+  - DOMAIN-SUFFIX,eastmoney.com,DIRECT
+  - DOMAIN-SUFFIX,eastmoneyfutures.com,DIRECT
+  - DOMAIN-SUFFIX,guba.com.cn,DIRECT
+  - DOMAIN-SUFFIX,haitunzhibo.com,DIRECT
+  - DOMAIN-SUFFIX,huoqibao.cn,DIRECT
+  - DOMAIN-SUFFIX,huoqibao.com,DIRECT
+  - DOMAIN-SUFFIX,huoqibao.com.cn,DIRECT
+  - DOMAIN-SUFFIX,langke.tv,DIRECT
+  - DOMAIN-SUFFIX,samacn.org.cn,DIRECT
+  - DOMAIN-SUFFIX,tiantianfunds.cn,DIRECT
+  - DOMAIN-SUFFIX,txjhqh.com,DIRECT
+  - DOMAIN-SUFFIX,uufund.cn,DIRECT
+  - DOMAIN-SUFFIX,uufund.com,DIRECT
+  - DOMAIN-SUFFIX,xzsec.com,DIRECT
+  - DOMAIN-SUFFIX,zhaiba.com,DIRECT
+  - DOMAIN-SUFFIX,zhongcaisuo.cn,DIRECT
+  - DOMAIN-SUFFIX,zhongcaisuo.com,DIRECT
+  - DOMAIN-SUFFIX,zhongcaisuo.com.cn,DIRECT
+  - IP-CIDR,113.44.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,120.195.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,120.79.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,122.9.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,122.96.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,124.70.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,153.3.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,157.0.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,180.101.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,218.2.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,218.206.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,221.226.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,221.236.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,222.190.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,223.112.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,47.106.0.0/16,DIRECT,no-resolve
+
+  # 2.2 港美金融（静态本地规则；统一走当前配置的总代理组）
+  - DOMAIN,cg.play-analytics.com,🚀 节点选择
+  - DOMAIN,cdn.futustatic.com,🚀 节点选择
+  - DOMAIN,qtcard.futunn.com,🚀 节点选择
+  - DOMAIN,qtcardfthk.futufin.com,🚀 节点选择
+  - DOMAIN,openapi.futunn.com,🚀 节点选择
+  - DOMAIN,api.futunn.com,🚀 节点选择
+  - DOMAIN,api5.futunn.com,🚀 节点选择
+  - DOMAIN,trade.futunn.com,🚀 节点选择
+  - DOMAIN,support.futunn.com,🚀 节点选择
+  - DOMAIN,download.futunn.com,🚀 节点选择
+  - DOMAIN,quote.longbridge.global,🚀 节点选择
+  - DOMAIN,trade.longportapp.com,🚀 节点选择
+  - DOMAIN,openapi.longbridge.com,🚀 节点选择
+  - DOMAIN,openapi-quote.longbridge.com,🚀 节点选择
+  - DOMAIN,openapi-trade.longbridge.com,🚀 节点选择
+  - DOMAIN,openapi.longbridge.cn,🚀 节点选择
+  - DOMAIN,openapi-quote.longbridge.cn,🚀 节点选择
+  - DOMAIN,openapi-trade.longbridge.cn,🚀 节点选择
+  - DOMAIN,cn.snowball-x.com,🚀 节点选择
+  - DOMAIN,www.snowballsecurities.com,🚀 节点选择
+  - DOMAIN,open.snowballsecurities.com,🚀 节点选择
+  - DOMAIN,openapi.snbsecurities.com,🚀 节点选择
+  - DOMAIN,sandbox.snbsecurities.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu.link,🚀 节点选择
+  - DOMAIN-SUFFIX,futu.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,futunn.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu0.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu1.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu2.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu3.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu4.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu5.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu6.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu7.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu8.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu9.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuau.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuapi.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuesop.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futufin.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuhk.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuhk1.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuhk2.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuhkapp.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuhongkong.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuhn.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuholdings.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuinc.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuin.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuniuniu.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futubull.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,futuchain.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futustatic.com,🚀 节点选择
+  - DOMAIN-SUFFIX,fututrade.com,🚀 节点选择
+  - DOMAIN-SUFFIX,fututrustee.com,🚀 节点选择
+  - DOMAIN-SUFFIX,qtlcdn.com,🚀 节点选择
+  - DOMAIN-SUFFIX,moomoo.com,🚀 节点选择
+  - DOMAIN-SUFFIX,api.moomoobull.com,🚀 节点选择
+  - DOMAIN-SUFFIX,moomooequity.com,🚀 节点选择
+  - DOMAIN-SUFFIX,moomootrustee.com,🚀 节点选择
+  - DOMAIN-SUFFIX,9oju31.launches.appsflyersdk.com,🚀 节点选择
+  - DOMAIN-SUFFIX,sgqt0j.launches.appsflyersdk.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futusg.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futunn.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,futusign.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuone.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuclean.com,🚀 节点选择
+  - DOMAIN-SUFFIX,ftnndn.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futuweb.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futures.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,moomoo-us.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futusecurities.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futumkt.com,🚀 节点选择
+  - DOMAIN-SUFFIX,futu.sg,🚀 节点选择
+  - DOMAIN-SUFFIX,futu.au,🚀 节点选择
+  - DOMAIN-SUFFIX,lbctrl.com,🚀 节点选择
+  - DOMAIN-SUFFIX,lbkrs.com,🚀 节点选择
+  - DOMAIN-SUFFIX,api.lbkrs.com,🚀 节点选择
+  - DOMAIN-SUFFIX,api-gl.lbkrs.com,🚀 节点选择
+  - DOMAIN-SUFFIX,wbrks.com,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge.app,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge.cloud,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge.com,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge.global,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge.sg,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridgeapp.com,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridgehk.com,🚀 节点选择
+  - DOMAIN-SUFFIX,longportapp.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,longportapp.com,🚀 节点选择
+  - DOMAIN-SUFFIX,lbkg.net,🚀 节点选择
+  - DOMAIN-SUFFIX,lb-static.com,🚀 节点选择
+  - DOMAIN-SUFFIX,longportapp.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,longbridge-inc.com,🚀 节点选择
+  - DOMAIN-SUFFIX,snowball-x.com,🚀 节点选择
+  - DOMAIN-SUFFIX,snowballsecurities.com,🚀 节点选择
+  - DOMAIN-SUFFIX,snbsecurities.com,🚀 节点选择
+  - DOMAIN-SUFFIX,itiger.com,🚀 节点选择
+  - DOMAIN-SUFFIX,itigerup.com,🚀 节点选择
+  - DOMAIN-SUFFIX,tigerbrokers.com,🚀 节点选择
+  - DOMAIN-SUFFIX,tigerbrokers.net,🚀 节点选择
+  - DOMAIN-SUFFIX,tigerbrokers.nz,🚀 节点选择
+  - DOMAIN-SUFFIX,tigerfintech.com,🚀 节点选择
+  - DOMAIN-SUFFIX,skytigris.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,tradeup.com,🚀 节点选择
+  - DOMAIN-SUFFIX,iotaskyt.com,🚀 节点选择
+  - DOMAIN-SUFFIX,laohu8.com,🚀 节点选择
+  - DOMAIN-SUFFIX,tigerbbs.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,tigerbbs.com,🚀 节点选择
+  - DOMAIN-SUFFIX,xiaohu8.com,🚀 节点选择
+  - DOMAIN-SUFFIX,zhijianfengyi.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,zhijianfengyi.com,🚀 节点选择
+  - DOMAIN-SUFFIX,interactivebrokers.com,🚀 节点选择
+  - DOMAIN-SUFFIX,interactivebrokers.com.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,schwab.com,🚀 节点选择
+  - DOMAIN-SUFFIX,schwab.com.cn,🚀 节点选择
+  - DOMAIN-SUFFIX,schwab.com.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,schwab.co.uk,🚀 节点选择
+  - DOMAIN-SUFFIX,emsec.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,htsc.com.hk,🚀 节点选择
+  - DOMAIN-SUFFIX,ibkr.com,🚀 节点选择
+  - DOMAIN-SUFFIX,ibkr.com.hk,🚀 节点选择
+  - DOMAIN-KEYWORD,futunn,🚀 节点选择
+  - DOMAIN-KEYWORD,futubull,🚀 节点选择
+  - DOMAIN-KEYWORD,futuhk,🚀 节点选择
+  - DOMAIN-KEYWORD,futufin,🚀 节点选择
+  - DOMAIN-KEYWORD,futuholdings,🚀 节点选择
+  - DOMAIN-KEYWORD,futuniuniu,🚀 节点选择
+  - DOMAIN-KEYWORD,futuesop,🚀 节点选择
+  - DOMAIN-KEYWORD,moomoo,🚀 节点选择
+  - IP-CIDR,1.14.242.0/23,🚀 节点选择,no-resolve
+  - IP-CIDR,1.15.158.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,101.32.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,106.55.66.0/23,🚀 节点选择,no-resolve
+  - IP-CIDR,111.230.119.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,111.230.214.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,119.147.110.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,119.28.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,119.29.48.0/23,🚀 节点选择,no-resolve
+  - IP-CIDR,119.91.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,121.5.97.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,124.156.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,129.226.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,14.152.91.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,161.117.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,162.14.10.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,170.106.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,175.178.207.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,18.162.38.24/32,🚀 节点选择,no-resolve
+  - IP-CIDR,18.163.254.94/32,🚀 节点选择,no-resolve
+  - IP-CIDR,18.166.204.203/32,🚀 节点选择,no-resolve
+  - IP-CIDR,183.60.225.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,193.112.234.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,193.112.84.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,34.226.76.162/32,🚀 节点选择,no-resolve
+  - IP-CIDR,38.65.217.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,42.193.128.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,42.194.152.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.130.170.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.130.30.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.132.106.6/32,🚀 节点选择,no-resolve
+  - IP-CIDR,43.132.106.8/32,🚀 节点选择,no-resolve
+  - IP-CIDR,43.132.107.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.132.138.6/32,🚀 节点选择,no-resolve
+  - IP-CIDR,43.132.138.67/32,🚀 节点选择,no-resolve
+  - IP-CIDR,43.134.158.106/32,🚀 节点选择,no-resolve
+  - IP-CIDR,43.135.64.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.135.82.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.142.232.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.145.30.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.152.182.46/32,🚀 节点选择,no-resolve
+  - IP-CIDR,43.153.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,43.160.156.0/24,🚀 节点选择,no-resolve
+  - IP-CIDR,43.163.17.229/32,🚀 节点选择,no-resolve
+  - IP-CIDR,47.243.107.98/32,🚀 节点选择,no-resolve
+  - IP-CIDR,47.243.118.180/32,🚀 节点选择,no-resolve
+  - IP-CIDR,47.57.180.81/32,🚀 节点选择,no-resolve
+  - IP-CIDR,47.85.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,49.234.0.0/16,🚀 节点选择,no-resolve
+  - IP-CIDR,49.51.77.113/32,🚀 节点选择,no-resolve
+  - IP-CIDR,49.51.78.0/23,🚀 节点选择,no-resolve
+  - IP-CIDR,54.172.233.156/32,🚀 节点选择,no-resolve
+  - IP-CIDR,8.218.30.161/32,🚀 节点选择,no-resolve
+
+  # 3. 广告拦截
   - GEOSITE,category-ads-all,🛑 广告拦截
   - GEOSITE,category-ads,🛑 广告拦截
 
-  # 3. AI 平台合集
+  # 4. AI 平台合集
   - GEOSITE,openai,🤖 AI 平台
   - DOMAIN-SUFFIX,openai.com,🤖 AI 平台
   - DOMAIN-SUFFIX,chatgpt.com,🤖 AI 平台
@@ -312,7 +590,7 @@ rules:
   - DOMAIN-SUFFIX,huggingface.co,🤖 AI 平台
   - DOMAIN-SUFFIX,hf.co,🤖 AI 平台
 
-  # 4. GFW 列表 + 常用海外
+  # 5. GFW 列表 + 常用海外
   - GEOSITE,gfw,🔒 GFW 列表
   - GEOSITE,google,🔒 GFW 列表
   - GEOSITE,youtube,🔒 GFW 列表
@@ -325,7 +603,7 @@ rules:
   - IP-CIDR,120.232.181.162/32,🔒 GFW 列表,no-resolve
   - IP-CIDR,180.163.150.162/32,🔒 GFW 列表,no-resolve
 
-  # 5. 中国域名 / 中国 IP（直连）
+  # 6. 中国域名 / 中国 IP（直连）
   - GEOSITE,cn,DIRECT
   - GEOIP,CN,DIRECT
   - DOMAIN-SUFFIX,cn,DIRECT
@@ -335,8 +613,8 @@ rules:
   - DOMAIN-SUFFIX,gov.cn,DIRECT
   - DOMAIN-SUFFIX,edu.cn,DIRECT
 
-  # 6. 海外域名兜底
+  # 7. 海外域名兜底
   - GEOSITE,geolocation-!cn,🌍 海外域名
 
-  # 7. 最终兜底
+  # 8. 最终兜底
   - MATCH,🚀 节点选择
