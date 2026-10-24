@@ -1,4 +1,4 @@
-# MODIFICATIONS
+﻿# MODIFICATIONS
 
 > 单文件制：全仓库只保留这一份，按目录分节记录。记录格式为「功能 → 修改内容 → 涉及文件与位置」。
 
@@ -636,6 +636,111 @@ netsh rule query             ~180ms
 - netsh 输出是本地化的，`enabledProfiles()` 同时匹配中英文关键字（域/Domain、专用/Private、公用/Public、启用/On、关闭/Off）。非中英文系统可能需要补充。
 - 自检只判断「有无面板规则」，不校验规则的端口/程序是否与实际一致。用户手改过规则时可能显示已存在但实际不匹配。
 - 程序内不做任何防火墙修改：静默改防火墙需要管理员清单，会让每次启动弹 UAC，并扩大攻击面。
+
+## 2026-10-24
+
+### internal/subscription/ — proxy-server-nameserver 追加机场自建 DoH
+
+**功能**：机场在订阅原文的 dns 段下发自己的 DoH 解析器（`https://appdsv3fb.<front>/api-v2/<token>`，三个前置域名轮换）。模板原先用固定的 `223.5.5.5` / `119.29.29.29` 把它整体顶掉，等于放弃了机场那层“保证解析到真入口”的能力。改为把机场条目合并到模板默认值**之前**，公共 DNS 退为后备（仅当机场 DoH 域名自身被污染时兜底）。
+
+**修改**：`template.yaml` 的 `proxy-server-nameserver` 块插入 `# __SUB_NS__` 标记行（注释形式，未被替换时模板仍是合法 YAML）；新增 `nameserver.go` 负责提取（块形式 + 流量形式）、校验、合并；`validNameserver` 只放行 `https/tls/quic/h3/udp` 方案、裸 IP 与 `system`，`http://` 与含空格的值一律丢弃；去重（对模板已有值、对自身）；上限 4 条，防止畸形订阅撑爆 dns 段；`ApplyTemplate` 在注入 proxies 与清除 controller/secret 之后调用合并，标记缺失时原样返回。
+
+**涉及文件**：`internal/subscription/template.yaml`、`internal/subscription/nameserver.go`（新增）、`internal/subscription/nameserver_test.go`（新增）、`internal/subscription/template.go`（`ApplyTemplate` + `resolverSet`）。
+
+**验证基线**（真实 74 节点订阅，`go run` 探针，探针用完即删）：
+
+```text
+raw 原文仅一行键，值在下一层 -> 提取到 3 条，按原序前置
+18|   proxy-server-nameserver:
+19|     - https://appdsv3fb.apiv2.a047.com/api-v2/<token>
+20|     - https://appdsv3fb.web.ak005.com/api-v2/<token>
+21|     - https://appdsv3fb.llguangli25n.com/api-v2/<token>
+22|     - 223.5.5.5
+23|     - 119.29.29.29
+24|   nameserver-policy:
+marker left: false；nodes: 74（未受影响）；default-nameserver 仍是两行公共 IP
+go test ./... / go vet ./... / gofmt -l .（无输出）/ go build ./... 全通过
+```
+
+**取舍**：机场条目在前意味着机场若下发错误/被污染的解析器会直接命中，公共 DNS 只在其本身失败时才生效；上限 4 条是拍的值，机场正常只发 3 条。标记是注释而不是空占位，保证 `template.yaml` 单独看也是合法的、且旧版本二进制读新版模板不会崩。
+
+### internal/service/ — 节点列表解析支持无引号 flow 写法
+
+**功能**：某机场的订阅用 `- { name: 'HongKong 01 | x3.0', type: ss, server: x1.good2026.com, ... }`（无引号键 + 单引号值）的 flow 写法。`CountNodes` 靠行首 `- {` 数出 40，`ExtractNodes` 只认 `"name":"…"` 和 `- name:`，于是刷新显示“成功，共 40 个节点”但节点列表恒为 0。
+
+**修改**：`flowName` / `flowSrv` 改为三选一捕获（双引号、单引号、裸值），键名也允许带引号；新增 `firstGroup()` 取第一个非空捕获；`name` 解析为空则跳过该条。块形式与 JSON 形式分支不变。
+
+**涉及文件**：`internal/service/service.go`（`flowName`、`flowSrv`、`firstGroup`、`ExtractNodes`）、`internal/service/nodes_test.go`（新增 6 个用例）。
+
+**验证基线**（真实订阅，40 节点，起服务走 `/api/v1/source` + `/api/v1/state`）：
+
+```text
+source -> {"nodes":40,"probeError":""}
+state  -> nodes=40 nodeList=40 err=""
+  HongKong 01 Netflix IEPL | x3.0 | x1.good2026.com
+  HongKong 02 Netflix IEPL | x3.0 | x2.good2026.com
+  HongKong 01 | x0.8 | mm.good2026.com
+go test ./... 通过；gofmt -l 无输出；go vet 无输出
+```
+
+**取舍**：仍是正则解析，不做完整 YAML 解析。值里含逗号时靠引号保护（有用例覆盖）；节点名里若出现未加引号的逗号仍会截断。`CountNodes` 与 `ExtractNodes` 的判据已对齐，不会再出现“计数有、列表空”。
+
+### internal/httpapi, internal/service — 订阅响应带配置名
+
+**功能**：客户端从 `Content-Disposition` 的 `filename` 取名，没有它才回落成路径末段（于是所有订阅都叫 `sub`），更新时逐份覆盖同名配置。改为按来源生成 `<host>/<label>`，与真实面板（如 glados 的 `glados-facility.com/giffcores@gmail.com`）同形；同时补 `Profile-Web-Page-Url`。
+
+**修改**：新增 `Service.SourceMeta()`（manual 用 URL 主机、account 用 label 或邮箱 + 订阅主机、local 固定“本机客户端”）与 `hostOnly()`；`sub` 处理器在写出前设置 `Content-Disposition` 与 `Profile-Web-Page-Url`，显式 `b64/url` 请求只用目标主机名。`profileFilename()` 清洗引号与控制字符，非 ASCII 时给 `filename="ascii 回退"` 并追加 RFC 5987 的 `filename*=UTF-8''…`，保证头部合法且中文名不丢。
+
+**涉及文件**：`internal/service/service.go`（`SourceMeta`、`hostOnly`）、`internal/httpapi/server.go`（`sub` 里的头部、`profileFilename`、`hostOnly`、`explicitHost`）、`internal/httpapi/filename_test.go`（新增 2 个用例）。
+
+**验证基线**（真实账号与真实手动订阅，起服务后看响应头）：
+
+```text
+手动源  -> Content-Disposition: attachment; filename="b.xlovehuawei.com.yaml"
+账号源  -> Content-Disposition: attachment; filename="flesa.apiv2.a047.com/demo.yaml"
+两者    -> Profile-Web-Page-Url: http://127.0.0.1:8787/
+go test ./... / go vet / gofmt -l（无输出）通过
+```
+
+**取舍**：同名订阅仍会互相覆盖 —— 名字只决定“叫什么”，不决定“存哪几份”；要真正不覆盖得靠客户端的 provider/merge 机制，服务端管不了。`Profile-Web-Page-Url` 用的是请求 Host，通过域名访问时才会是域名；`b64/url` 一次性请求拿不到来源 label，只能用主机名。
+
+### web, internal/* — 订阅名可自己填
+
+**功能**：上一版名字只能自动生成（主机名 / 账号邮箱）。改为可输入：账号一直有“名称”字段（`accLabel`，留空才回退邮箱），手动源补同名输入框，另加 `?name=` 即时覆盖。
+
+**修改**：`settings` 增 `manualLabel`（`ManualLabel`/`SetManualLabel`）；`SourceMeta` 的 manual 分支优先用该标签；`POST /api/v1/source` 接收并保存 `manualLabel`（保存位置在“未变化则跳过”判定之前，只改名字也会落盘）；`PublicAccounts` 回传 `manualLabel`；`sub` 支持 `?name=` 覆盖文件名；前端 `manualRow` 增输入框并在切换来源时回填、随请求提交。
+
+**涉及文件**：`internal/store/store.go`、`internal/service/service.go`（`SourceMeta`、`PublicAccounts`）、`internal/httpapi/server.go`（请求体字段、保存、`?name=`）、`internal/httpapi/filename_test.go`（2 个新用例）、`web/index.html`、`web/app.js`。
+
+**验证基线**（真实手动订阅，UTF-8 请求）：
+
+```text
+POST /api/v1/source {"manualLabel":"主线路"} -> 200
+GET  /sub?key=... -> Content-Disposition: attachment; filename="b.xlovehuawei.com.yaml"; filename*=UTF-8''b.xlovehuawei.com%2F%E4%B8%BB%E7%BA%BF%E8%B7%AF.yaml
+GET  /sub?key=...&name=temp -> filename="b.xlovehuawei.com/temp.yaml"
+GET  /api/v1/accounts -> manualLabel 回显“主线路”
+go test ./... / go vet / gofmt -l / node --check web/app.js 全通过
+```
+
+**取舍**：中文名在 `filename=` 里被剥成 ASCII、真名放 `filename*`；不认 RFC 5987 的老客户端会显示主机名。名字只影响显示，仍不解决同名覆盖（要免覆盖需 provider/merge）。`?name=` 不持久化，适合临时导出。
+
+### internal/httpapi — filename 用账号名，不再加主机前缀
+
+**功能**：上一版文件名是 `<主机>/<名称>`（仿 glados），实际使用里主机前缀是噪声。改为直接取配置的名称；没名称才回退主机。
+
+**修改**：`profileFilename` 去掉拼接逻辑，`name = label`，为空才用 host，再为空用 `fastlink`；ASCII 回退同理（中文名剥离后为空则回退 host）。`filename*` 里现在就是纯名称。
+
+**涉及文件**：`internal/httpapi/server.go`（`profileFilename`）、`internal/httpapi/filename_test.go`（用例改为“只出名称”）。
+
+**验证基线**：
+
+```text
+账号源（label=demo） -> Content-Disposition: attachment; filename="demo.yaml"
+单元用例：火星 + 主机 -> filename="b.xlovehuawei.com.yaml"; filename*=UTF-8''火星.yaml
+go test ./... / go vet / gofmt -l 通过
+```
+
+**取舍**：同名账号仍需自己避免重名；不认 `filename*` 的客户端看到的是主机名或 `fastlink`。
 
 ## 已知取舍
 

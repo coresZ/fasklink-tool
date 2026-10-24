@@ -640,9 +640,10 @@ func (s *Service) PublicAccounts() (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"active":    active,
-		"manualUrl": s.Store.ManualURL(),
-		"accounts":  accounts,
+		"active":      active,
+		"manualUrl":   s.Store.ManualURL(),
+		"manualLabel": s.Store.ManualLabel(),
+		"accounts":    accounts,
 	}, nil
 }
 
@@ -787,6 +788,41 @@ func hostLabel(raw string) string {
 		return raw
 	}
 	return u.Host
+}
+
+// SourceMeta returns the pieces clients use to name a profile: a human label
+// and the source host. Both may be empty; callers fall back to a fixed name.
+func (s *Service) SourceMeta(sourceName string) (label, host string) {
+	switch {
+	case sourceName == "manual":
+		raw := s.Store.ManualURL()
+		host = hostOnly(raw)
+		if label = strings.TrimSpace(s.Store.ManualLabel()); label != "" {
+			return label, host
+		}
+		return host, host
+	case sourceName == "local":
+		return "本机客户端", ""
+	case strings.HasPrefix(sourceName, "account:"):
+		account, _ := s.Store.Account(strings.TrimPrefix(sourceName, "account:"))
+		if account == nil {
+			return "", ""
+		}
+		label = strings.TrimSpace(account.Label)
+		if label == "" {
+			label = account.Email
+		}
+		return label, hostOnly(account.SubscriptionURL)
+	}
+	return "", ""
+}
+
+func hostOnly(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // ActivateAccount makes the given account the active source. Kept separate from
@@ -961,10 +997,21 @@ func (s *Service) RotateSubKey(sourceName string) (string, error) {
 
 var (
 	flowNode  = regexp.MustCompile(`^\s*-\s*\{(.*)\}\s*$`)
-	flowName  = regexp.MustCompile(`"name"\s*:\s*"([^"]*)"`)
-	flowSrv   = regexp.MustCompile(`"server"\s*:\s*"([^"]*)"`)
+	flowName  = regexp.MustCompile(`["']?name["']?\s*:\s*("([^"]*)"|'([^']*)'|([^,}]+))`)
+	flowSrv   = regexp.MustCompile(`["']?server["']?\s*:\s*("([^"]*)"|'([^']*)'|([^,}]+))`)
 	blockNode = regexp.MustCompile(`(?m)^\s*-\s*name:\s*"?([^"\n]+)"?\s*$(?:\n\s+server:\s*"?([^"\n]+)"?)?`)
 )
+
+// firstGroup returns the first non-empty capture among the alternatives, so
+// quoted, single-quoted and bare flow values all resolve the same way.
+func firstGroup(m []string) string {
+	for _, value := range m[2:] {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
 
 func ExtractNodes(yamlText string) []model.Node {
 	cut := strings.Index(yamlText, "proxy-groups:")
@@ -979,11 +1026,15 @@ func ExtractNodes(yamlText string) []model.Node {
 			if name == nil {
 				continue
 			}
+			parsed := firstGroup(name)
+			if parsed == "" {
+				continue
+			}
 			server := ""
 			if s := flowSrv.FindStringSubmatch(m[1]); s != nil {
-				server = s[1]
+				server = firstGroup(s)
 			}
-			out = append(out, model.Node{Name: name[1], Server: server})
+			out = append(out, model.Node{Name: parsed, Server: server})
 		}
 	}
 	if len(out) > 0 {

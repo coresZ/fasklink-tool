@@ -1,4 +1,4 @@
-import { qrSvg } from "/vendor/qr.mjs";
+﻿import { qrSvg } from "/vendor/qr.mjs";
 
 const $ = (id) => document.getElementById(id);
 let state = null;
@@ -134,7 +134,7 @@ function renderSources() {
     }
   });
   $("manualRow").classList.toggle("gone", active !== "manual");
-  if (active === "manual") $("manualUrl").value = accounts.manualUrl || "";
+  if (active === "manual") { $("manualUrl").value = accounts.manualUrl || ""; $("manualLabel").value = accounts.manualLabel || ""; }
   const when = state && state.source && state.source.fetchedAt
     ? new Date(state.source.fetchedAt * 1000).toLocaleString("zh-CN")
     : "尚未拉取";
@@ -273,7 +273,7 @@ async function switchSource(source, force = false) {
   setHint("sourceHint", force ? "正在登录并拉取…" : "正在切换…");
   try {
     const body = { source, refresh: force };
-    if (source === "manual") body.manualUrl = $("manualUrl").value.trim();
+  if (source === "manual") { body.manualUrl = $("manualUrl").value.trim(); body.manualLabel = $("manualLabel").value.trim(); }
     const data = await api("/api/v1/source", { method: "POST", body });
     await loadAccounts();
     await refresh();

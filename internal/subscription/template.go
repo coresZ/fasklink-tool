@@ -80,5 +80,18 @@ func ApplyTemplate(sourceYAML string) (string, error) {
 	out := strings.Replace(templateText, "__PROXIES_BLOCK__", proxies, 1)
 	out = controllerLine.ReplaceAllString(out, "")
 	out = secretLine.ReplaceAllString(out, "")
+	// The provider ships its own DoH resolvers for its entry domains; they go
+	// ahead of the template's public defaults, which stay as a fallback for when
+	// the DoH hostnames themselves fail to resolve.
+	out = mergeNameservers(out, upstreamNameservers(sourceYAML), resolverSet(upstreamNameservers(templateText)))
 	return out, nil
+}
+
+// resolverSet turns values into a lookup map for dedupe against the template.
+func resolverSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
+	}
+	return set
 }

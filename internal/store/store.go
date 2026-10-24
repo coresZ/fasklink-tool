@@ -278,6 +278,8 @@ func (s *Store) ActiveSource() string                { return s.setting("active"
 func (s *Store) SetActiveSource(source string) error { return s.setSetting("active", source) }
 func (s *Store) ManualURL() string                   { return s.setting("manualUrl", "") }
 func (s *Store) SetManualURL(url string) error       { return s.setSetting("manualUrl", url) }
+func (s *Store) ManualLabel() string                 { return s.setting("manualLabel", "") }
+func (s *Store) SetManualLabel(label string) error   { return s.setSetting("manualLabel", label) }
 
 // ----------------------------------------------------------------- accounts
 

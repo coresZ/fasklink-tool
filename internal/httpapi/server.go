@@ -279,9 +279,10 @@ func (s *Server) accountsPost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) source(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Source    string `json:"source"`
-		ManualURL string `json:"manualUrl"`
-		Refresh   bool   `json:"refresh"`
+		Source      string `json:"source"`
+		ManualURL   string `json:"manualUrl"`
+		ManualLabel string `json:"manualLabel"`
+		Refresh     bool   `json:"refresh"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -294,6 +295,12 @@ func (s *Server) source(w http.ResponseWriter, r *http.Request) {
 	manualURL := body.ManualURL
 	if body.Source == "manual" && manualURL == "" {
 		manualURL = s.Service.Store.ManualURL()
+	}
+	if body.Source == "manual" {
+		if err := s.Service.Store.SetManualLabel(strings.TrimSpace(body.ManualLabel)); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	unchanged := body.Source == before && (body.Source != "manual" || manualURL == s.Service.Store.ManualURL())
 	if unchanged && !body.Refresh && s.Service.Probe().At > 0 {
@@ -575,8 +582,9 @@ func (s *Server) sub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		result service.LoginResult
-		err    error
+		result       service.LoginResult
+		err          error
+		explicitHost string
 	)
 	if explicit {
 		target, targetErr := extractTargetRequest(r)
@@ -584,6 +592,7 @@ func (s *Server) sub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, targetErr.Error(), http.StatusBadRequest)
 			return
 		}
+		explicitHost = hostOnly(target)
 		result, err = s.Service.DecodeURL(r.Context(), target)
 	} else {
 		if sourceName == "" {
@@ -603,6 +612,22 @@ func (s *Server) sub(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Profile-Update-Interval", "12")
+	// Clients name a profile from Content-Disposition's filename; without it
+	// they fall back to the last path segment ("sub"). The value mirrors what
+	// real panels ship: "<host>/<label>".
+	label, host := "", ""
+	if explicit {
+		host = explicitHost
+	} else {
+		label, host = s.Service.SourceMeta(sourceName)
+	}
+	if override := strings.TrimSpace(r.URL.Query().Get("name")); override != "" {
+		label = override
+	}
+	w.Header().Set("Content-Disposition", profileFilename(label, host))
+	if r.Host != "" {
+		w.Header().Set("Profile-Web-Page-Url", "http://"+r.Host+"/")
+	}
 	if header := formatUserInfo(result.UserInfo); header != "" {
 		w.Header().Set("Subscription-Userinfo", header)
 	}
@@ -624,6 +649,56 @@ func formatUserInfo(info *model.UserInfo) string {
 		return ""
 	}
 	return fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", info.Upload, info.Download, info.Total, info.Expire)
+}
+
+// hostOnly returns the hostname of a URL, or "" when it does not parse.
+func hostOnly(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+// profileFilename builds the Content-Disposition value clients use as the
+// profile name: the configured account name, falling back to the source host.
+// A plain ASCII fallback keeps the header valid when the name is Chinese, with
+// filename* carrying the real one.
+func profileFilename(label, host string) string {
+	clean := func(value string) string {
+		value = strings.Map(func(r rune) rune {
+			if r == '"' || r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, value)
+		return strings.TrimSpace(value)
+	}
+	label, host = clean(label), clean(host)
+	name := label
+	if name == "" {
+		name = host
+	}
+	if name == "" {
+		name = "fastlink"
+	}
+	ascii := strings.Trim(strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r > 0x7f {
+			return -1
+		}
+		return r
+	}, name)), "/ ")
+	if ascii == "" {
+		ascii = host
+	}
+	if ascii == "" {
+		ascii = "fastlink"
+	}
+	value := fmt.Sprintf("attachment; filename=%q", ascii+".yaml")
+	if ascii != name {
+		value += "; filename*=UTF-8''" + url.PathEscape(name+".yaml")
+	}
+	return value
 }
 
 func extractTarget(input string) (string, error) {
