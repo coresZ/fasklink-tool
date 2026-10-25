@@ -64,9 +64,16 @@ func undoObfuscatedBase64(text string) string {
 	return out.String()
 }
 
-// DecryptProfile mirrors transferSub.local.mjs: raw YAML, XOR-restored YAML,
-// AES-GCM, or obfuscated-base64 YAML.
+// DecryptProfile accepts everything the client may hand back: raw YAML, an APXS
+// v2 container (Apex / Speed), XOR-restored YAML, AES-GCM, or obfuscated-base64
+// YAML. APXS is tried first because its magic is unambiguous and the generic
+// paths would otherwise waste a pass on 28 KB of ciphertext.
 func DecryptProfile(raw []byte) (string, error) {
+	if IsAPXS(raw) {
+		if yaml, _, err := DecryptApexProfile(raw); err == nil {
+			return yaml, nil
+		}
+	}
 	diskKey := []byte(DiskXORKey)
 	restored := make([]byte, len(raw))
 	for i, b := range raw {

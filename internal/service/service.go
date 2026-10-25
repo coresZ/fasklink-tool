@@ -28,8 +28,6 @@ import (
 	"fastlink-tool/internal/subscription"
 )
 
-const defaultAPIOrigin = "https://flesa.apiv2.a047.com"
-
 type Service struct {
 	Root      string
 	Config    config.Config
@@ -41,7 +39,21 @@ type Service struct {
 	mu      sync.Mutex
 	probe   Probe
 	refresh bool
+
+	// Apex state. The remote config only carries domain names and path mappings,
+	// so it is cached for a while: refetching it on every refresh added ~900 ms
+	// to each run for data that changes a few times a month.
+	apexMu      sync.Mutex
+	apexCfg     ApexConfig
+	apexCfgAt   time.Time
+	apexAPI     *http.Transport
+	apexSub     *http.Transport
+	apexAPIOnce sync.Once
+	apexSubOnce sync.Once
 }
+
+// apexConfigTTL is how long a fetched fl_apex.json is reused.
+const apexConfigTTL = 30 * time.Minute
 
 type Probe struct {
 	At       int64
@@ -60,6 +72,9 @@ type LoginResult struct {
 	// Clash template was applied. Kept so the decrypt tool can show both variants.
 	RawYAML  string
 	UserInfo *model.UserInfo
+	// Apex is set when the profile came from an APXS v2 container, so the UI can
+	// show which key generation was used. Nil for the older schemes.
+	Apex *subscription.ApexHeader
 }
 
 type resolvedSource struct {
@@ -164,6 +179,12 @@ func (s *Service) DecodeURL(ctx context.Context, rawURL string) (LoginResult, er
 	if err != nil {
 		return LoginResult{}, err
 	}
+	// An APXS container needs the client certificate, so it cannot be decrypted
+	// from the bytes alone the way the older schemes can. Re-fetch through the
+	// subscription profile and report the container header to the caller.
+	if subscription.IsAPXS(body) {
+		return s.decodeApexURL(ctx, rawURL)
+	}
 	raw, err := subscription.DecryptProfile(body)
 	if err != nil {
 		return LoginResult{}, err
@@ -177,6 +198,54 @@ func (s *Service) DecodeURL(ctx context.Context, rawURL string) (LoginResult, er
 		YAML:            yamlText,
 		RawYAML:         raw,
 		UserInfo:        subscription.ParseUserInfo(header),
+	}, nil
+}
+
+// decodeApexURL re-fetches an APXS subscription with the client certificate.
+//
+// The first fetch already proved the host answers, but without the certificate a
+// real panel returns 404 for every /v2 path, so the bytes never arrive. The
+// download path is read from the URL itself, which keeps this usable for a link
+// pasted by hand as well as one produced by LoginApex.
+func (s *Service) decodeApexURL(ctx context.Context, rawURL string) (LoginResult, error) {
+	client, err := subscription.ApexHTTPClient("subscription", 25*time.Second)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if s.Transport != nil {
+		client.Transport = s.Transport
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	req.Header.Set("User-Agent", "apex/"+subscription.ApexDefaultVersion())
+	resp, err := client.Do(req)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer resp.Body.Close()
+	body, err := subscription.ReadCapped(resp)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return LoginResult{}, subscription.ErrorFromResponse(resp, body)
+	}
+	raw, apexHeader, err := subscription.DecryptApexProfile(body)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	yamlText, err := subscription.ApplyTemplate(raw)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{
+		SubscriptionURL: rawURL,
+		YAML:            yamlText,
+		RawYAML:         raw,
+		UserInfo:        subscription.ParseUserInfo(resp.Header.Get("Subscription-Userinfo")),
+		Apex:            &apexHeader,
 	}, nil
 }
 
@@ -366,6 +435,13 @@ func (s *Service) FetchResolved(ctx context.Context, source resolvedSource) (Log
 }
 
 func (s *Service) fetchYAML(ctx context.Context, rawURL string) (LoginResult, error) {
+	// An Apex subscription URL cannot be fetched without the client certificate:
+	// the panel answers 404 for every /v2 path, which used to look like a stale
+	// subscription and forced a fresh login on every refresh. Route it through the
+	// certificate-aware path instead.
+	if s.isApexSubscriptionURL(rawURL) {
+		return s.fetchApexYAML(ctx, rawURL)
+	}
 	body, header, err := s.Fetcher.FetchSubscription(ctx, rawURL)
 	if err != nil {
 		return LoginResult{}, err
@@ -379,6 +455,66 @@ func (s *Service) fetchYAML(ctx context.Context, rawURL string) (LoginResult, er
 		return LoginResult{}, err
 	}
 	return LoginResult{SubscriptionURL: rawURL, YAML: yamlText, RawYAML: raw, UserInfo: subscription.ParseUserInfo(header)}, nil
+}
+
+// isApexSubscriptionURL reports whether a URL points at the Apex / Speed download
+// endpoint. The path comes from fl_apex.json, so it is matched on its stable
+// prefix rather than on a fixed host: the provider rotates CDN domains.
+func (s *Service) isApexSubscriptionURL(rawURL string) bool {
+	if strings.Contains(rawURL, "/v2/feed/download") {
+		return true
+	}
+	s.apexMu.Lock()
+	path := s.apexCfg.DownloadPath
+	s.apexMu.Unlock()
+	return path != "" && strings.Contains(rawURL, path)
+}
+
+// fetchApexYAML reuses the stored access key, so a refresh costs one download
+// instead of a login plus a download. The token stays valid until the panel
+// rotates it, and a stale token surfaces as 401/403, which the caller retries by
+// logging in again.
+func (s *Service) fetchApexYAML(ctx context.Context, rawURL string) (LoginResult, error) {
+	transport, err := s.apexTransport("subscription")
+	if err != nil {
+		return LoginResult{}, err
+	}
+	client := &http.Client{Timeout: 25 * time.Second, Transport: transport}
+	if s.Transport != nil {
+		client.Transport = s.Transport
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	req.Header.Set("User-Agent", "apex/"+subscription.ApexDefaultVersion())
+	resp, err := client.Do(req)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer resp.Body.Close()
+	body, err := subscription.ReadCapped(resp)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return LoginResult{}, subscription.ErrorFromResponse(resp, body)
+	}
+	raw, header, err := subscription.DecryptApexProfile(body)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	yamlText, err := subscription.ApplyTemplate(raw)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{
+		SubscriptionURL: rawURL,
+		YAML:            yamlText,
+		RawYAML:         raw,
+		UserInfo:        subscription.ParseUserInfo(resp.Header.Get("Subscription-Userinfo")),
+		Apex:            &header,
+	}, nil
 }
 
 // apiEnvelope is the panel's response wrapper. Real deployments disagree on the
@@ -423,6 +559,12 @@ func looksLikeHTML(body []byte) bool {
 	return strings.HasPrefix(trimmed, "<")
 }
 
+// LoginAccount resolves one password account.
+//
+// Apex / Speed is the panel this deployment talks to, so an account without an
+// explicit API origin is routed straight to LoginApex. The legacy /api/v1 flow
+// below only runs when the operator fills in an API origin by hand, i.e. when
+// pointing the tool at a different (Xboard) panel on purpose.
 func (s *Service) LoginAccount(ctx context.Context, account model.Account) (*LoginResult, error) {
 	password, err := s.Protector.Decrypt(account.PasswordEnc)
 	if err != nil {
@@ -434,8 +576,20 @@ func (s *Service) LoginAccount(ctx context.Context, account model.Account) (*Log
 
 	origin := strings.TrimSpace(account.APIOrigin)
 	if origin == "" {
-		origin = defaultAPIOrigin
+		// No explicit panel: this is an Apex account by definition. A stored
+		// subscription URL already carries the access key, so reuse it instead of
+		// logging in again: the panel re-generates the node set on download, and a
+		// fresh login only adds a round trip on top of that.
+		if url := strings.TrimSpace(account.SubscriptionURL); url != "" {
+			if result, err := s.fetchApexYAML(ctx, url); err == nil {
+				_ = s.Store.UpdateAccountRuntime(account.ID, result.SubscriptionURL, 0, time.Now().Unix(), result.UserInfo, "")
+				return &result, nil
+			}
+			// A stale or rejected key falls through to a fresh login below.
+		}
+		return s.LoginApex(ctx, account)
 	}
+
 	base, err := url.Parse(origin)
 	if err != nil || base.Scheme != "https" || base.Host == "" {
 		return nil, errors.New("API 域名必须使用 HTTPS")

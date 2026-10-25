@@ -13,6 +13,15 @@ import (
 
 const CurrentSchema = 2
 
+// Proxy modes for outbound panel requests. The default is direct: the panel and
+// its CDN are reachable without a proxy, and the system proxy (when one is set)
+// costs several hundred milliseconds per request because every step opens a new
+// connection through it.
+const (
+	ProxyDirect = "direct"
+	ProxySystem = "system"
+)
+
 type Config struct {
 	SchemaVersion int      `json:"schemaVersion,omitempty"`
 	Host          string   `json:"host"`
@@ -20,6 +29,9 @@ type Config struct {
 	AccessKey     string   `json:"accessKey"`
 	Domains       []string `json:"domains"`
 	LogLevel      string   `json:"logLevel,omitempty"`
+	// ProxyMode selects how outbound requests to the panel and its CDN are
+	// routed: ProxyDirect ignores the system proxy, ProxySystem honours it.
+	ProxyMode string `json:"proxyMode,omitempty"`
 }
 
 func Default() Config {
@@ -30,6 +42,7 @@ func Default() Config {
 		AccessKey:     "fastlink",
 		Domains:       []string{},
 		LogLevel:      "info",
+		ProxyMode:     ProxyDirect,
 	}
 }
 
@@ -72,6 +85,9 @@ func Load(root string) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.AccessKey) == "" {
 		cfg.AccessKey = "fastlink"
+	}
+	if cfg.ProxyMode != ProxySystem {
+		cfg.ProxyMode = ProxyDirect
 	}
 	if cfg.Domains == nil {
 		cfg.Domains = []string{}

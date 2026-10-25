@@ -121,12 +121,12 @@
           <button id="tabPw" class="on" type="button">密码账号</button>
           <button id="tabLink" type="button">链接账号</button>
         </div>
-        <div class="note" id="typeNote">通过 API 域名 + 邮箱 + 密码登录，自动换取订阅。</div>
+        <div class="note" id="typeNote">填写邮箱和密码即可，面板地址会自动识别。</div>
         <label>名称（可选，留空自动生成）</label>
         <input id="accLabel" placeholder="例如 主账号" />
         <div class="form-sec" id="secPwFields">
           <div class="grid2">
-            <div><label>API 域名（可留空）</label><input id="accOrigin" placeholder="留空则用 https://flesa.apiv2.a047.com" /></div>
+            <div><label>API 域名（留空即可）</label><input id="accOrigin" placeholder="留空自动识别；只有连接其他 Xboard 面板时才需要填" /></div>
             <div><label>邮箱</label><input id="accEmail" type="email" autocomplete="username" /></div>
           </div>
           <label>密码</label><input id="accPassword" type="password" autocomplete="off" placeholder="必填" />
@@ -134,7 +134,7 @@
         </div>
         <div class="form-sec gone" id="secLinkFields">
           <label>订阅链接</label>
-          <input id="accSubUrl" placeholder="https://…/subscribe?token=…" />
+          <input id="accSubUrl" placeholder="https://…/subscribe?token=… 或 …/v2/feed/download?access_key=…" />
         </div>
         <div class="row">
           <button id="btnAccSave" class="primary">保存账号</button>
@@ -147,10 +147,10 @@
     </section>
 
     <section id="sec-tool" class="sec">
-      <div class="sec-head"><div><h2>解密工具</h2><p>粘贴 https 订阅链接或 base64 内容，或从本机客户端读取。</p></div></div>
+      <div class="sec-head"><div><h2>解密工具</h2><p>粘贴 https 订阅链接或 base64 内容，或从本机客户端读取。加密订阅会自动识别。</p></div></div>
       <div class="card">
         <div class="label">订阅链接</div>
-        <textarea id="toolInput" rows="2" wrap="off" class="tool-input" spellcheck="false" placeholder="https://…/subscribe?token=… 或 /sub?b64=…"></textarea>
+        <textarea id="toolInput" rows="2" wrap="off" class="tool-input" spellcheck="false" placeholder="https://…/subscribe?token=… 或 …/v2/feed/download?access_key=… 或 /sub?b64=…"></textarea>
         <div class="row"><button id="btnToolLocal" class="ghost">读取本机客户端订阅</button><button id="btnToolRun" class="primary">解密</button></div>
         <div id="toolHint" class="hint"></div>
       </div>
@@ -172,7 +172,7 @@
     </section>
 
     <section id="sec-adv" class="sec">
-      <div class="sec-head"><div><h2>高级设置</h2><p>端口 / 监听 / 口令 / 附加域名。</p></div></div>
+      <div class="sec-head"><div><h2>高级设置</h2><p>端口 / 监听 / 口令 / 附加域名 / 出网方式。</p></div></div>
       <div class="card">
         <div class="grid2">
           <div><label>监听范围</label><select id="cfgHost"><option value="0.0.0.0">局域网 + 本机</option><option value="127.0.0.1">仅本机</option></select></div>
@@ -180,6 +180,13 @@
         </div>
         <label>固定口令</label><input id="cfgKey" autocomplete="off" />
         <label>附加地址（域名 / DDNS，逗号或换行分隔）</label><textarea id="cfgDomains" rows="3"></textarea>
+        <div class="row between proxy-row">
+          <div class="proxy-label">
+            <div class="label">走系统代理</div>
+            <div class="muted proxy-note" id="proxyNote">关闭时直连面板，通常更快</div>
+          </div>
+          <button id="btnProxy" class="sm" type="button" aria-pressed="false">关闭</button>
+        </div>
         <div class="row"><button id="btnSaveCfg" class="primary">保存</button><button id="btnLogs" class="ghost">查看日志</button></div>
         <div id="cfgHint" class="hint"></div>
       </div>

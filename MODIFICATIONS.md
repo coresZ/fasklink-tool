@@ -742,9 +742,217 @@ go test ./... / go vet / gofmt -l 通过
 
 **取舍**：同名账号仍需自己避免重名；不认 `filename*` 的客户端看到的是主机名或 `fastlink`。
 
-## 已知取舍
+## 2026-10-25
 
+### internal/subscription/ · internal/service/ — 接入 Apex / Speed（APXS v2）
+**功能**：让后端能取到 Apex / Speed 面板的**真实**订阅。这类面板（`com.flapp.clients.apex` v7.2.3）的订阅正文是 APXS v2 容器加密，旧的 `/api/v1/client/subscribe` 虽然仍返回 200，但内容是 SSPanel-Malio 兼容层的替代节点：134 条 vmess/ss 指向公网 IP、`uuid` 只有 2 个且几乎全是账号 uuid，响应首行就写着「本接口为SSPanel-Malio兼容层」。真节点只在 `/v2/feed/download` 的 APXS 密文里：74 条 vless + `xtls-rprx-vision`，单域名 `*.llguanglisf.com`，端口 10101–10200，`uuid` 各不相同。
+
+**根因**：两处硬编码与新面板不匹配。
+
+1. 订阅解密只认 `keys.go` 里的 Lite 方案（AES-GCM + 磁盘 XOR + 混淆 Base64），对 APXS 容器无从下手。
+2. 登录固定打 `/api/v1/passport/auth/login`。Apex 面板的 API 整体在 `/v2` 下，且每个请求都要 mTLS 客户端证书；缺证书时 nginx 直接回 **404**（不是 403），所以现象是「接口不存在」而不是「没权限」，方向完全指错。
+
+**修改内容**：
+
+- 新增 `internal/subscription/apex_keys.go`：把 APK 里内联的三套 mTLS 证书与 32 字节 AES-256 密钥集中成一个文件，沿用 `keys.go` 的约定（客户端升级只改这里）。证书以 `purpose` 区分：`api` 打登录/账号端点，`subscription` 打订阅下载，`oss` 本仓库未使用。
+
+- 新增 `internal/subscription/apex.go`：
+  - `IsAPXS` / `ParseApexHeader`：容器前缀校验（magic、version=2、keyId、encVersion）。
+  - `DecryptApexProfile`：切掉 13 字节头与尾部 80 字节（16B 校验 + 64B 签名），用 `cipher.NewCTR` 复现 GCM 的 CTR keystream 解密。
+  - **不校验 GCM tag**：该服务端把 16 字节校验 + 64 字节签名放在尾部，但 tag 位置与标准 `nonce|ct|tag` 布局对不上，`gcm.Open()` 会拒绝正确密钥。改用「明文是合法 UTF-8 且像 Clash 配置」自证，错密钥无法通过。
+  - `trimToValidUTF8`：尾部是二进制，按 UTF-8 边界截断，避免把解密成功变成解码失败。
+  - `ApexHTTPClient(purpose, timeout)`：按用途加载证书的 `*http.Client`。
+
+- `internal/subscription/decrypt.go`：`DecryptProfile` 先试 `IsAPXS`，命中走 APXS，否则原逻辑不变。旧的 raw YAML / 磁盘 XOR / AES-GCM / 混淆 Base64 四条路径全部保留。
+
+- 新增 `internal/service/apex.go`：
+  - `LoadApexConfig`：依次尝试三个 CDN 源取 `fl_apex.json`，解出 `domains` / `subscribe_domain` / `subscribe_path` / 版本。UA 必须小写 `apex/<version>`。
+  - `apexSession`：`POST /v2/auth/token` → `auth_data` + `token`；随后 `GET /v2/feed/access-token` 取流量与到期。
+  - `apexDownload`：按 `subscribe_path` 的映射（`/api/v1/client/subscribe?token=` → `/v2/feed/download?access_key=`）拼 URL，用 `subscription` 证书下载并解密。
+  - `LoginApex`：串起全流程，`apexUserInfo` 把 `u`/`d`/`transfer_enable`/`expired_at` 映射成 UI 已有的 `model.UserInfo`，账号页的流量与到期无需改前端。
+  - `decodeApexURL`：解密工具粘贴 APXS 链接时，普通 fetcher 拿不到证书会 404，改用 `subscription` 证书重取。
+
+- `internal/service/service.go`：
+  - `LoginAccount` 在 `/passport/auth/login` 返回 404 **或 200+HTML** 时回退 `LoginApex`；非上述情况（如 401 密码错）仍按原逻辑报错，避免把凭据错误误判成协议不匹配。
+  - 新增 `htmlInsteadOfJSONError` 类型：把「返回网页而不是 JSON」从普通 error 提升为可判定类型。原先直接返回字符串，调用方无法区分「WAF 拦截」与「这个面板根本没有 /api/v1」。
+  - 新增 `isMissingAPIRoute` 判定上述两种形态。
+
+  > 触发这个修正的实测：旧默认域名 `https://flesa.apiv2.a047.com` 现在对所有路径返回 **200 + HTML 单页**（`<!doctypehtml><meta charset="UTF-8">`，12126 字节），不是 404。若只认 404，用户在「API 域名」留空时，Apex 账号会直接失败并报「可能被 WAF / 人机验证拦截」，方向完全错。
+  - `LoginResult` 增加 `Apex *subscription.ApexHeader`，仅 APXS 路径填充。
+
+- `internal/httpapi/server.go`：`/api/v1/decrypt` 响应增加 `apex` 字段（`version` / `keyId` / `encVersion` / `trailerLen`），非 APXS 时为 `null` 而非零值对象。
+
+**涉及文件**：`internal/subscription/apex_keys.go`（新增）、`internal/subscription/apex.go`（新增）、`internal/subscription/apex_test.go`（新增）、`internal/subscription/decrypt.go`、`internal/service/apex.go`（新增）、`internal/service/service.go`、`internal/httpapi/server.go`。
+
+**验证基线**：
+
+```text
+go build ./... / go vet ./...               通过
+go test ./internal/subscription/ -run Apex   9/9 PASS
+  RoundTrip / IsAPXS / ParseApexHeaderRejects / WrongKey / DropsTrailer
+  Truncated / DecryptProfileDispatchesAPXS / CertificatesParse / ProfilesAreDistinct
+go test ./internal/httpapi ./internal/service ./internal/secret ./internal/store   全部 ok
+
+真实面板端到端（LoginApex）
+  config source : https://cdno01.llguanglisf.com/apos/fl_apex.json
+  panel type    : xboard  version 7.2.3
+  api bases     : [https://flaxapi.web.ak005.com https://flaxapi.apiv2.a047.com]
+  sub bases     : [https://flaxsub.web.ak005.com https://flaxsub.apiv2.a047.com]
+  download path : /v2/feed/download?access_key=
+  apex header   : {Version:2 KeyID:1 EncVersion:1 TrailerLen:80}
+  userinfo      : up=23664086 down=1042278228 total=107606966272 expire=1798054159
+  raw yaml      : 27905 bytes
+  templated     : 46405 bytes, 74 nodes
+
+真实面板端到端（HTTP 层，起服务 + 保存账号 + refresh + /state）
+  POST /api/v1/refresh -> {"nodes":74,"probeError":"","userInfo":{...}}
+  GET  /api/v1/state   -> healthy=true nodes=74 probeError=""
+                          nodeList 74 条，first={name:香港-01 server:axtuapp-...llguanglisf.com}
+
+套用模板后的 YAML 自检
+  proxies 74（全 vless）、proxy-groups 18、rules 330
+  external-controller / secret 已按模板规则移除
+  分组引用与规则目标全部可解析（unresolved = 0）
+  节点名无重复
+```
+
+**取舍**：
+
+- APXS 尾部 80 字节（16B 校验 + 64B 签名）不解析，直接切掉；不影响 YAML 完整性。
+- GCM tag 不校验，理由见上；以「明文像 Clash 配置」自证。
+- `fl_apex.json` 的 `signature` 字段不校验。它保护的是 CDN 上的配置副本，而配置只提供域名/路径映射，实际数据仍由面板端点在 mTLS 下返回。
+- 只测了 `arm64-v8a` 的密钥材料；`armeabi-v7a` 缺 `subscription` 证书，走不通订阅。
+- 回退判定覆盖 404 与「200 + HTML」两种形态。若某面板用 403 表示「无此路由」，仍会落到原 `/api/v1` 报错路径，需要按实际面板调整 `isMissingAPIRoute`。
+
+### internal/service/ · internal/config/ — 拉取提速与代理开关
+
+**功能**：修掉「每次拉取订阅都很慢」，并把出网方式改成默认直连、可选走系统代理。
+
+**根因**（三处，实测定位）：
+
+1. **`fetchYAML` 用错 fetcher**。`Resolve` 已经复用了 `account.SubscriptionURL`（里面就含 access_key），但 `fetchYAML` 走的是 `s.Fetcher`（普通 fetcher，无 mTLS 证书）。Apex 的 `/v2/feed/download` 缺证书一律回 **404**，`IsStaleSubscription(err)` 因此判定「订阅失效」，`FetchResolved` 就每次都重新登录。实测每次刷新都在重复 `POST /v2/auth/token`。
+
+2. **`LoginApex` 无条件重新登录**。即使已存 access_key，也先打 `/v2/auth/token` 再下载。
+
+3. **每次请求新建 `http.Transport`**。`ApexHTTPClient` 每次 new 一个 Transport，连接池和 TLS 会话全不复用；一次刷新要建 4 次 mTLS 连接。
+
+4. **默认走系统代理**。`http.Client` 未设 `Transport` 时用 `http.DefaultTransport`，会读 `HTTPS_PROXY`。本机 `127.0.0.1:7892` 的代理让每个请求多 100–900ms；同一请求直连 68ms。
+
+**修改内容**：
+
+- `internal/config/config.go`
+  - 新增 `ProxyMode`（`direct` 默认 / `system`），`Load()` 里非法值一律回落 `direct`。
+  - 常量 `ProxyDirect` / `ProxySystem`。
+
+- `internal/subscription/apex.go`
+  - 新增 `ApexTransport(purpose, proxyMode)`：可复用的 `*http.Transport`，带证书、`MaxIdleConnsPerHost=4`、`IdleConnTimeout=90s`、`ForceAttemptHTTP2`；`proxyMode=system` 时才挂 `http.ProxyFromEnvironment`。
+  - `ApexHTTPClient` 保留为一次性便捷封装，注明「长期调用方应持有 Transport」。
+
+- `internal/service/service.go`
+  - `Service` 新增 `apexCfg/apexCfgAt`（配置缓存，TTL 30 分钟）、`apexAPI/apexSub`（连接池）、`apexAPIOnce/apexSubOnce`。
+  - `fetchYAML` 先判 `isApexSubscriptionURL`，是则走新增的 `fetchApexYAML`（带证书、复用 access_key、不登录）。
+  - `isApexSubscriptionURL` 匹配 `/v2/feed/download` 或配置里的 `DownloadPath`（域名会轮换，所以匹配路径而非 host）。
+  - `LoginAccount` 在 `APIOrigin` 为空且已存 URL 时，直接 `fetchApexYAML`；失败才回落 `LoginApex`。这就是「token 没问题就一直复用」的实现。
+  - 新增 `apexConfig`（带缓存）/ `invalidateApexConfig` / `proxyMode` / `apexTransport` / `ResetTransports`。
+
+- `internal/service/apex.go`
+  - `LoadApexConfig` 拆出 `loadApexConfig(ctx, timeout, proxyMode)`，配置拉取也走 `ProxyDirect`。
+  - `apexSession` / `apexDownload` 改用 `s.apexTransport(...)` 的长连接池。
+  - `LoginApex` 用 `s.apexConfig(ctx)` 取缓存；下载失败时 `invalidateApexConfig()`，让下次重新拉配置而不是在旧域名上重试到 TTL 过期。
+
+- `internal/httpapi/server.go`
+  - `POST /api/v1/config` 接受 `proxyMode`；模式变化时调 `Service.ResetTransports()` 立刻生效，不用等 idle 超时。
+
+**验证基线**（真实面板，配置已缓存）：
+
+```text
+连续 4 次 LoginAccount（首次无 token，之后复用）
+  #1  1720 ms  nodes=74  hadToken=false
+  #2   900 ms  nodes=74  hadToken=true
+  #3   389 ms  nodes=74  hadToken=true
+  #4   432 ms  nodes=74  hadToken=true
+
+单请求耗时（同一 transport，300ms 间隔）
+  POST /v2/auth/token  330 / 325 / 290 / 504 / 991 ms
+  GET  /v2/feed/download  2583 / 1404 / 318 ms
+  → 登录本身稳定 ~300ms；下载首两次是面板现算 74 个 vless 节点，属服务端行为
+```
+
+**取舍**：
+
+- `/v2/feed/download` 首次 2–2.5 秒是面板生成节点集的耗时，客户端无法优化；第 2 次起走面板缓存约 300ms。
+- access_key 失效时靠 `fetchApexYAML` 返回的 401/403 触发回落登录，没有主动过期检测（面板不下发有效期）。
+- 配置缓存 30 分钟；面板换域名后最多滞后 30 分钟，下载失败会立即 `invalidateApexConfig` 提前刷新。
+
+### web/ — Apex 文案与代理开关
+
+**功能**：账号页/解密工具的文案与新后端能力对齐，并给「走系统代理」一个开关。
+
+**修改内容**：
+
+- `web/index.html`
+  - 账号页 `#typeNote` 默认文案改为「填写邮箱和密码即可，面板地址会自动识别。」
+  - `#accOrigin` 标签改「API 域名（留空即可）」，placeholder 从 `留空则用 https://flesa.apiv2.a047.com` 改为「留空自动识别；只有连接其他 Xboard 面板时才需要填」。原默认域名现在是营销站，留着会诱导用户填错。
+  - `#accSubUrl` placeholder 补 Apex 形态 `…/v2/feed/download?access_key=…`。
+  - 解密工具说明补「加密订阅会自动识别」，`#toolInput` placeholder 补 `access_key` 形态。
+  - 高级设置卡片新增代理开关行：`.proxy-row` + `#proxyNote` + `#btnProxy`。
+
+- `web/app.js`
+  - `setTab` / `enterEditMode` 两处 `#typeNote` 文案同步更新，链接账号分支补「Apex / Speed 的 access_key 链接同样支持。」
+  - 新增 `proxyOn` 状态、`renderProxy()`、`toggleProxy()`。开关点击即刻 `POST /api/v1/config { proxyMode }` 写穿，不等「保存」：它是独立开关，后端在模式变化时会立刻丢弃连接池。
+  - `loadConfig()` 读 `cfg.proxyMode` 并渲染。
+  - `saveConfig()` 的 body 带上 `proxyMode`，避免「先拨开关再保存」时被覆盖。
+  - 绑定 `$("btnProxy").onclick = toggleProxy`。
+
+- `web/style.css`
+  - 新增 `.proxy-row` / `.proxy-label` / `.proxy-note` / `#btnProxy` / `#btnProxy.on`。按钮 `min-width:56px` 固定宽度，避免「开启/关闭」切换时行内位移；`#proxyNote` 定高 + 省略号，长文案不撑高卡片。
+
+**涉及文件**：`web/index.html`（账号页、解密工具、高级设置）、`web/app.js`（`setTab`/`enterEditMode`/`loadConfig`/`saveConfig`/新增 `renderProxy`/`toggleProxy`/事件绑定）、`web/style.css`（代理开关样式）。
+
+**验证基线**：
+
+```text
+node --check web/app.js        通过
+ID 一致性（JS 引用 vs HTML 定义）  无缺失；新增 btnProxy/proxyNote 均存在
+go build ./... / go vet ./...  通过
+go test ./internal/service ./internal/httpapi ./internal/config ./internal/store ./internal/secret  全 ok
+
+真实服务 + HTTP 层（起 httpapi，登录后调 /api/v1/config）
+  初始                        proxyMode=direct
+  切 system                  返回 system, restartRequired=false
+  再读（持久化）              system
+  切回 direct                direct
+  非法值 bogus               回落 direct
+  先切 system 再保存整表      proxyMode=system 且 host=0.0.0.0（互不覆盖）
+  落盘 config.json           proxyMode 正确写入
+```
+
+### internal/app/ — dev 首次种子配置改为局域网
+
+**功能**：修掉「dev 启动后只监听 127.0.0.1，手机/局域网打不开面板」。
+
+**根因**：`config.Default()` 的 `Host` 本来就是 `0.0.0.0`，但 `internal/app/app.go` 在 dev 模式首次初始化时**手写了一份配置结构体**，把 `Host` 硬编码成 `127.0.0.1`。于是每个全新的 `.run-dev` 状态目录都是仅环回，必须手动去高级设置里改成「局域网 + 本机」才生效。这与上一轮修掉的「dev 强制覆盖 cfg.Host」是同一类问题的两个入口。
+
+**修改内容**：dev 首次种子改为基于 `config.Default()`，只覆盖 `LogLevel = "debug"`，其余（Host / Port / AccessKey / ProxyMode）一律继承默认值。同时补上 `ProxyMode` 字段，与 `Default()` 保持一致。
+
+**涉及文件**：`internal/app/app.go`（`Run()` 内 dev 种子分支）。
+
+**验证基线**：
+
+```text
+config.Default().Host         0.0.0.0
+config.Default().ProxyMode    direct
+
+全新状态目录首次种子
+  host=0.0.0.0  port=8787  proxyMode=direct  logLevel=debug
+  落盘 config.json 字段与默认值一致
+```
+
+**附**：已有的 `.run-dev/.run/config.json` 里是旧值 `127.0.0.1`，不会因代码修复而自动重建，已手工改为 `0.0.0.0` 并补 `proxyMode`。
+
+## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
 - `dist/.run/` 保留着旧 Node 版的 `accounts.json` / `cache/*.json`，是 Go 版首次启动自动迁移的数据源，未随旧产物一并清理。
 - 版本号：本次改动未提交，故未递增 `cmd/fastlink-tool/main.go` 的 `version`；发布前需按 `scripts/build.ps1 -Version` 递增。
+- `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）在本次改动之前就已失败（`nameserver_test.go:34/56/157: key missing`），与 APXS 无关，未在本轮处理。

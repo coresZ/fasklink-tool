@@ -46,14 +46,13 @@ func Run(opts Options) error {
 
 	if opts.Dev {
 		if _, err := os.Stat(config.Path(root)); errors.Is(err, os.ErrNotExist) {
-			_ = config.Save(root, config.Config{
-				SchemaVersion: config.CurrentSchema,
-				Host:          "127.0.0.1",
-				Port:          8787,
-				AccessKey:     "fastlink",
-				Domains:       []string{},
-				LogLevel:      "debug",
-			})
+			// Seed from config.Default() so dev and production start from the same
+			// listener scope. Hardcoding 127.0.0.1 here made every fresh dev state
+			// loopback-only, so phones on the LAN could not open the panel or its
+			// subscription links until the setting was changed by hand.
+			seed := config.Default()
+			seed.LogLevel = "debug"
+			_ = config.Save(root, seed)
 		}
 	}
 	cfg, err := config.Load(root)

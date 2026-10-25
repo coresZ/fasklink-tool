@@ -21,6 +21,7 @@ import (
 	"fastlink-tool/internal/model"
 	"fastlink-tool/internal/platform"
 	"fastlink-tool/internal/service"
+	"fastlink-tool/internal/subscription"
 )
 
 type Server struct {
@@ -412,12 +413,29 @@ func (s *Server) decrypt(w http.ResponseWriter, r *http.Request) {
 		// tool can offer both variants side by side.
 		"rawYaml":  result.RawYAML,
 		"userInfo": result.UserInfo,
+		// apex is present only when the profile came from an APXS v2 container,
+		// so the tool can say which key generation the payload used.
+		"apex": apexJSON(result.Apex),
 		// Node count comes from the same parser the subscription view uses, so the
 		// tool agrees with the rest of the UI. A regex over the YAML cannot: this
 		// template emits both block ("- name:") and flow ('- {"name":...}') forms.
 		"nodes":    len(service.ExtractNodes(result.YAML)),
 		"rawNodes": len(service.ExtractNodes(result.RawYAML)),
 	})
+}
+
+// apexJSON flattens an APXS header for the browser. Returns nil for the older
+// schemes so the field is omitted rather than rendered as a zeroed object.
+func apexJSON(header *subscription.ApexHeader) map[string]any {
+	if header == nil {
+		return nil
+	}
+	return map[string]any{
+		"version":    header.Version,
+		"keyId":      header.KeyID,
+		"encVersion": header.EncVersion,
+		"trailerLen": header.TrailerLen,
+	}
 }
 
 func (s *Server) tempAccount(w http.ResponseWriter, r *http.Request) {
@@ -505,6 +523,7 @@ func (s *Server) configPost(w http.ResponseWriter, r *http.Request) {
 		Port      int      `json:"port"`
 		AccessKey *string  `json:"accessKey"`
 		Domains   []string `json:"domains"`
+		ProxyMode *string  `json:"proxyMode"`
 	}
 	if err := readJSON(r, &patch); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -512,6 +531,7 @@ func (s *Server) configPost(w http.ResponseWriter, r *http.Request) {
 	}
 	next := s.Config
 	oldHost, oldPort := next.Host, next.Port
+	oldProxy := next.ProxyMode
 	if patch.Host == "0.0.0.0" || patch.Host == "127.0.0.1" {
 		next.Host = patch.Host
 	}
@@ -524,12 +544,24 @@ func (s *Server) configPost(w http.ResponseWriter, r *http.Request) {
 	if patch.Domains != nil {
 		next.Domains = patch.Domains
 	}
+	if patch.ProxyMode != nil {
+		if *patch.ProxyMode == config.ProxySystem {
+			next.ProxyMode = config.ProxySystem
+		} else {
+			next.ProxyMode = config.ProxyDirect
+		}
+	}
 	if err := config.Save(s.Root, next); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	s.Config = next
 	s.Service.Config = next
+	if next.ProxyMode != oldProxy {
+		// Drop pooled connections so the new proxy mode applies immediately
+		// instead of waiting for the idle timeout.
+		s.Service.ResetTransports()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"config": next, "restartRequired": next.Port != oldPort || next.Host != oldHost})
 }
 

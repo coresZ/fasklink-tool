@@ -445,7 +445,7 @@ function setFormType(t) {
   $("secLinkFields").classList.toggle("gone", pw);
   $("btnAccTest").classList.toggle("hidden", !pw);
   $("verifyNote").classList.toggle("hidden", !pw);
-  setText($("typeNote"), pw ? "通过 API 域名 + 邮箱 + 密码登录，自动换取订阅。" : "只需要一条订阅链接，直接拉取，无密码。");
+  setText($("typeNote"), pw ? "填写邮箱和密码即可，面板地址会自动识别。" : "只需要一条订阅链接，直接拉取，无密码。Apex / Speed 的 access_key 链接同样支持。");
   if (!editingId) setHint("accFormHint", "");
 }
 
@@ -467,7 +467,7 @@ function enterEditMode(acc) {
   $("secLinkFields").classList.toggle("gone", formType === "pw");
   $("btnAccTest").classList.toggle("hidden", formType !== "pw");
   $("verifyNote").classList.toggle("hidden", formType !== "pw");
-  setText($("typeNote"), formType === "pw" ? "通过 API 域名 + 邮箱 + 密码登录，自动换取订阅。" : "只需要一条订阅链接，直接拉取，无密码。");
+  setText($("typeNote"), formType === "pw" ? "填写邮箱和密码即可，面板地址会自动识别。" : "只需要一条订阅链接，直接拉取，无密码。Apex / Speed 的 access_key 链接同样支持。");
   $("accLabel").value = acc.label || "";
   $("accOrigin").value = acc.apiOrigin || "";
   $("accEmail").value = acc.email || "";
@@ -546,12 +546,39 @@ async function saveAccount() {
   }
 }
 
+// proxyOn mirrors config.proxyMode. The button writes it straight through
+// instead of waiting for 保存: it is an independent toggle, and the backend
+// drops its pooled connections the moment it changes.
+let proxyOn = false;
+
 async function loadConfig() {
   const cfg = await api("/api/v1/config");
   $("cfgHost").value = cfg.host;
   $("cfgPort").value = cfg.port;
   $("cfgKey").value = cfg.accessKey || "";
   $("cfgDomains").value = (cfg.domains || []).join(", ");
+  proxyOn = cfg.proxyMode === "system";
+  renderProxy();
+}
+
+function renderProxy() {
+  const btn = $("btnProxy");
+  btn.textContent = proxyOn ? "开启" : "关闭";
+  btn.classList.toggle("on", proxyOn);
+  btn.setAttribute("aria-pressed", proxyOn ? "true" : "false");
+  setText($("proxyNote"), proxyOn
+    ? "通过系统代理访问面板，较慢但可在受限网络下使用"
+    : "关闭时直连面板，通常更快");
+}
+
+async function toggleProxy() {
+  const next = !proxyOn;
+  try {
+    await api("/api/v1/config", { method: "POST", body: { proxyMode: next ? "system" : "direct" } });
+    proxyOn = next;
+    renderProxy();
+    setHint("cfgHint", `已${next ? "开启" : "关闭"}系统代理，下次拉取生效`, true);
+  } catch (err) { setHint("cfgHint", err.message); }
 }
 
 // 网络可达性自检：只读，不会改动防火墙。结果用于提示「局域网为什么连不上」。
@@ -587,6 +614,10 @@ async function saveConfig() {
     port: Number($("cfgPort").value),
     accessKey: $("cfgKey").value,
     domains: $("cfgDomains").value.split(/[\n,]/).map((x) => x.trim()).filter(Boolean),
+    // Send the toggle state too: the endpoint patches only the fields it
+    // receives, but keeping the two in sync avoids a surprise when the user
+    // flips the proxy and then saves.
+    proxyMode: proxyOn ? "system" : "direct",
   };
   try {
     const data = await api("/api/v1/config", { method: "POST", body });
@@ -727,6 +758,7 @@ $("btnAccSave").onclick = saveAccount;
 $("btnAccTest").onclick = verifyAccount;
 $("btnCancelEdit").onclick = () => { exitEditMode(); };
 $("btnSaveCfg").onclick = saveConfig;
+$("btnProxy").onclick = toggleProxy;
 $("btnLogs").onclick = showLogs;
 $("btnNetDiag").onclick = loadNetDiag;
 $("btnQuit").onclick = async () => {

@@ -223,6 +223,17 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--muted)
 .variant-tabs{display:inline-flex;gap:4px;padding:3px;margin-top:10px;background:var(--field);border-radius:9px}
 .variant-tab{border:0;background:transparent;color:var(--muted);border-radius:7px;padding:5px 12px;cursor:pointer;font:inherit;font-size:12px}
 .variant-tab.on{background:rgba(59,130,246,.18);color:#fff}
+
+/* Proxy toggle: an independent switch, not part of the 保存 form, so it sits on
+   its own row and keeps a fixed button width to avoid shifting when the label
+   changes between 开启 / 关闭. */
+.proxy-row{margin-top:14px;align-items:center;gap:12px}
+.proxy-label{min-width:0;flex:1}
+.proxy-label .label{margin-bottom:2px}
+.proxy-note{height:16px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#btnProxy{min-width:56px;flex:0 0 auto;text-align:center;font-variant-numeric:tabular-nums}
+#btnProxy.on{border-color:var(--accent);background:rgba(59,130,246,.18);color:#fff}
+
 @media(max-width:760px){.app{grid-template-columns:minmax(0,1fr)}.side{position:static;height:auto}.nav{flex-direction:row;overflow:auto}.side-foot{margin-top:0;border-radius:12px}.session-status{flex-direction:row;flex-wrap:wrap;gap:10px;height:auto;justify-content:flex-start}.statusline.sub{padding-left:0}#subSource,#subStatus{flex:0 0 auto}.session-actions{flex-wrap:wrap}.main{padding:14px}.addrGrid{grid-template-columns:1fr}.grid2{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
 /* .sec-head 是 flex，左侧文案块没有 min-width:0 时不会收缩，窄屏下会顶宽页面。 */
 .sec-head>div:first-child{flex:1;min-width:0}
