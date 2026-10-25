@@ -950,6 +950,50 @@ config.Default().ProxyMode    direct
 
 **附**：已有的 `.run-dev/.run/config.json` 里是旧值 `127.0.0.1`，不会因代码修复而自动重建，已手工改为 `0.0.0.0` 并补 `proxyMode`。
 
+### internal/service/ — 解密工具对 APXS 链接返回 404
+
+**功能**：修掉「解密工具粘贴 Apex 订阅链接直接报 404」。
+
+**根因**：`DecodeURL` 先用普通 fetcher 请求，拿到 `err` 就立刻返回；`IsAPXS(body)` 的判断排在 `err` 检查之后，永远走不到。而 Apex 的 `/v2/feed/download` 缺客户端证书必然是 404，所以带证书的 `decodeApexURL` 成了死代码。
+
+**修改内容**：
+
+- `DecodeURL` 先按 URL 形态判断（`/v2/feed/download`、配置里的 `DownloadPath`、或含 `access_key=` 的查询串），命中就直接走带证书路径；请求发出后再保留一次 `IsAPXS` 快照作为二次机会，兜住「代理/镜像把 APXS 转发过来」的情况。
+- `isApexSubscriptionURL` 补 `access_key=` 兜底：配置缓存为空时 `DownloadPath` 不可知，仅靠路径匹配会漏。
+- `decodeApexURL` 改用 `s.apexTransport("subscription")` 长连接池（原先每次 new transport），UA 版本优先取配置缓存里的值。
+
+**涉及文件**：`internal/service/service.go`（`DecodeURL`、`isApexSubscriptionURL`、`decodeApexURL`）。
+
+**验证基线**（本地 dev 构建，真实面板）：
+
+```text
+POST /api/v1/decrypt  input=<apex 订阅链接>
+  修复前  HTTP 400 / HTTP 404 nginx 默认页
+  修复后  nodes=74  rawNodes=74  apex={"version":2,"keyId":1,"encVersion":1,"trailerLen":80}
+```
+
+### 本地构建调试结论（打包产物验收）
+
+按 `scripts/build.ps1` 同样参数本地构建 exe，逐项实测：
+
+```text
+health            ok
+首页 / app.js / style.css  200
+/api/v1/login     200
+/api/v1/accounts  200（保存成功）
+/api/v1/source    200
+/api/v1/refresh   200 → 74 节点，probeError 空
+/api/v1/state     healthy=true nodes=74
+/sub              200 → 46433 B，74 vless，proxy-groups/rules 齐全，external-controller 已移除
+/decrypt（APXS）   200 → 74 节点 + apex header
+代理开关           system ⇄ direct 双向生效
+```
+
+另确认两点非缺陷现象：
+
+- **单实例互斥锁**：已有实例运行时新实例静默退出（`Local\FastLinkTool`），表现为「双击没反应」。需先结束 `fastlink-tool.exe` 进程。
+- **`go run` 不会热编译**：源码改动后若不重启，跑的还是旧二进制，`/api/v1/*` 会全部 404。
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。

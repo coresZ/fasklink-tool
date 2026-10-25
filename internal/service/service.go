@@ -175,13 +175,19 @@ func (s *Service) sourceURL(sourceName string) string {
 // Clash template). The tool shows both so the user can compare before trusting the
 // rewritten config.
 func (s *Service) DecodeURL(ctx context.Context, rawURL string) (LoginResult, error) {
+	// An Apex download endpoint must be fetched with the client certificate, and
+	// the certificate has to be chosen before the request goes out: without it the
+	// panel answers 404 for every /v2 path, so sniffing the response first would
+	// only ever see an error page. Decide from the URL shape instead.
+	if s.isApexSubscriptionURL(rawURL) {
+		return s.decodeApexURL(ctx, rawURL)
+	}
 	body, header, err := s.loopbackFetcher().FetchSubscription(ctx, rawURL)
 	if err != nil {
 		return LoginResult{}, err
 	}
-	// An APXS container needs the client certificate, so it cannot be decrypted
-	// from the bytes alone the way the older schemes can. Re-fetch through the
-	// subscription profile and report the container header to the caller.
+	// A pasted URL may still turn out to be an APXS container (a proxy or mirror
+	// in front of the panel), so keep the sniff as a second chance.
 	if subscription.IsAPXS(body) {
 		return s.decodeApexURL(ctx, rawURL)
 	}
@@ -208,10 +214,11 @@ func (s *Service) DecodeURL(ctx context.Context, rawURL string) (LoginResult, er
 // download path is read from the URL itself, which keeps this usable for a link
 // pasted by hand as well as one produced by LoginApex.
 func (s *Service) decodeApexURL(ctx context.Context, rawURL string) (LoginResult, error) {
-	client, err := subscription.ApexHTTPClient("subscription", 25*time.Second)
+	transport, err := s.apexTransport("subscription")
 	if err != nil {
 		return LoginResult{}, err
 	}
+	client := &http.Client{Timeout: 25 * time.Second, Transport: transport}
 	if s.Transport != nil {
 		client.Transport = s.Transport
 	}
@@ -219,7 +226,15 @@ func (s *Service) decodeApexURL(ctx context.Context, rawURL string) (LoginResult
 	if err != nil {
 		return LoginResult{}, err
 	}
-	req.Header.Set("User-Agent", "apex/"+subscription.ApexDefaultVersion())
+	// Use the version from the cached remote config when available; the default
+	// is only a fallback for a link pasted before any config was fetched.
+	version := subscription.ApexDefaultVersion()
+	s.apexMu.Lock()
+	if s.apexCfg.Version != "" {
+		version = s.apexCfg.Version
+	}
+	s.apexMu.Unlock()
+	req.Header.Set("User-Agent", "apex/"+version)
 	resp, err := client.Do(req)
 	if err != nil {
 		return LoginResult{}, err
@@ -467,7 +482,14 @@ func (s *Service) isApexSubscriptionURL(rawURL string) bool {
 	s.apexMu.Lock()
 	path := s.apexCfg.DownloadPath
 	s.apexMu.Unlock()
-	return path != "" && strings.Contains(rawURL, path)
+	if path != "" && strings.Contains(rawURL, path) {
+		return true
+	}
+	// Before any remote config has been fetched the path is unknown. Fall back to
+	// the access_key query the Apex download endpoint always uses, so a link
+	// pasted into the decrypt tool is still routed through the certificate path
+	// instead of failing with a 404 from the plain fetcher.
+	return strings.Contains(rawURL, "access_key=")
 }
 
 // fetchApexYAML reuses the stored access key, so a refresh costs one download
