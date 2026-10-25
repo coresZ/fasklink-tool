@@ -11,7 +11,7 @@ import (
 	"fastlink-tool/internal/platform"
 )
 
-var version = "1.1.1-dev"
+var version = "1.2.0"
 
 func main() {
 	dev := flag.Bool("dev", false, "development mode: console logs, disk assets, .run-dev state")
