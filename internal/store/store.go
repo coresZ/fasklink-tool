@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL DEFAULT 'password',
   label TEXT NOT NULL DEFAULT '',
-  api_origin TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
   password_enc TEXT NOT NULL DEFAULT '',
   subscription_url TEXT NOT NULL DEFAULT '',
@@ -66,7 +65,7 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS accounts_email_origin ON accounts(email, api_origin);
+CREATE INDEX IF NOT EXISTS accounts_email ON accounts(email);
 `
 
 func Open(root string) (*Store, error) {
@@ -107,7 +106,24 @@ func Open(root string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	s.migrateLocalSource()
 	return s, nil
+}
+
+// migrateLocalSource retires the "local" source (reading the FastLink client).
+// Existing installs point at it, so the active source is moved to the first
+// account, or to the manual slot when there is none.
+func (s *Store) migrateLocalSource() {
+	var active string
+	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key = 'active'`).Scan(&active); err != nil || active != "local" {
+		return
+	}
+	var id string
+	if err := s.db.QueryRow(`SELECT id FROM accounts ORDER BY created_at, id LIMIT 1`).Scan(&id); err == nil && id != "" {
+		_ = s.setSetting("active", "account:"+id)
+		return
+	}
+	_ = s.setSetting("active", "manual")
 }
 
 // addMissingColumns upgrades databases created before a column existed.
@@ -137,7 +153,6 @@ func now() int64 { return time.Now().Unix() }
 type legacyAccount struct {
 	ID              string          `json:"id"`
 	Label           string          `json:"label"`
-	APIOrigin       string          `json:"apiOrigin"`
 	Email           string          `json:"email"`
 	Password        string          `json:"password"`
 	SubscriptionURL string          `json:"subscriptionUrl"`
@@ -214,9 +229,9 @@ func (s *Store) migrateLegacy() error {
 	for _, a := range legacy.Accounts {
 		userInfo, _ := json.Marshal(a.UserInfo)
 		if _, err := tx.Exec(`INSERT INTO accounts
-			(id,label,api_origin,email,password_enc,subscription_url,last_login,last_fetch,user_info_json,error,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-			a.ID, a.Label, a.APIOrigin, a.Email, a.Password, a.SubscriptionURL, a.LastLogin, a.LastFetch, string(userInfo), a.Error, stamp, stamp); err != nil {
+			(id,label,email,password_enc,subscription_url,last_login,last_fetch,user_info_json,error,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			a.ID, a.Label, a.Email, a.Password, a.SubscriptionURL, a.LastLogin, a.LastFetch, string(userInfo), a.Error, stamp, stamp); err != nil {
 			return err
 		}
 	}
@@ -274,7 +289,7 @@ func (s *Store) setSetting(key, value string) error {
 	return err
 }
 
-func (s *Store) ActiveSource() string                { return s.setting("active", "local") }
+func (s *Store) ActiveSource() string                { return s.setting("active", "manual") }
 func (s *Store) SetActiveSource(source string) error { return s.setSetting("active", source) }
 func (s *Store) ManualURL() string                   { return s.setting("manualUrl", "") }
 func (s *Store) SetManualURL(url string) error       { return s.setSetting("manualUrl", url) }
@@ -286,7 +301,7 @@ func (s *Store) SetManualLabel(label string) error   { return s.setSetting("manu
 func scanAccount(row interface{ Scan(...any) error }) (model.Account, error) {
 	var a model.Account
 	var userInfo string
-	if err := row.Scan(&a.ID, &a.Kind, &a.Label, &a.APIOrigin, &a.Email, &a.PasswordEnc, &a.SubscriptionURL, &a.LastLogin, &a.LastFetch, &userInfo, &a.Error); err != nil {
+	if err := row.Scan(&a.ID, &a.Kind, &a.Label, &a.Email, &a.PasswordEnc, &a.SubscriptionURL, &a.LastLogin, &a.LastFetch, &userInfo, &a.Error); err != nil {
 		return a, err
 	}
 	if a.Kind == "" {
@@ -299,7 +314,7 @@ func scanAccount(row interface{ Scan(...any) error }) (model.Account, error) {
 	return a, nil
 }
 
-const accountColumns = `id,kind,label,api_origin,email,password_enc,subscription_url,last_login,last_fetch,user_info_json,error`
+const accountColumns = `id,kind,label,email,password_enc,subscription_url,last_login,last_fetch,user_info_json,error`
 
 func (s *Store) Accounts() ([]model.Account, error) {
 	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM accounts ORDER BY created_at, id`)
@@ -338,12 +353,11 @@ func (s *Store) UpsertAccount(a model.Account) error {
 		kind = model.KindPassword
 	}
 	_, err := s.db.Exec(`INSERT INTO accounts
-		(id,kind,label,api_origin,email,password_enc,subscription_url,last_login,last_fetch,user_info_json,error,created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+		(id,kind,label,email,password_enc,subscription_url,last_login,last_fetch,user_info_json,error,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			kind=excluded.kind,
 			label=excluded.label,
-			api_origin=excluded.api_origin,
 			email=excluded.email,
 			password_enc=excluded.password_enc,
 			subscription_url=excluded.subscription_url,
@@ -352,7 +366,7 @@ func (s *Store) UpsertAccount(a model.Account) error {
 			user_info_json=excluded.user_info_json,
 			error=excluded.error,
 			updated_at=excluded.updated_at`,
-		a.ID, kind, a.Label, a.APIOrigin, a.Email, a.PasswordEnc, a.SubscriptionURL, a.LastLogin, a.LastFetch, string(userInfo), a.Error, stamp, stamp)
+		a.ID, kind, a.Label, a.Email, a.PasswordEnc, a.SubscriptionURL, a.LastLogin, a.LastFetch, string(userInfo), a.Error, stamp, stamp)
 	return err
 }
 
@@ -449,7 +463,7 @@ func (s *Store) EnsureAllSubKeys() error {
 	if err != nil {
 		return err
 	}
-	names := map[string]bool{"local": true, "manual": true}
+	names := map[string]bool{"manual": true}
 	for _, a := range accounts {
 		names["account:"+a.ID] = true
 	}

@@ -226,6 +226,16 @@ func ApexDefaultVersion() string { return apexDefaultVersion }
 
 // BuildAPXS assembles a container the way the panel does, with a zeroed trailer.
 // Used by tests to round-trip a known payload.
+// ApexProfileKey decodes the AES key APXS containers are sealed with. Exported
+// so callers outside this package can build fixtures with BuildAPXS.
+func ApexProfileKey() ([]byte, error) {
+	key, err := hex.DecodeString(apexAESKeyHex)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
 func BuildAPXS(plain []byte, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

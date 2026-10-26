@@ -3,16 +3,12 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -101,7 +97,6 @@ type AccountInput struct {
 	ID              string
 	Kind            string
 	Label           string
-	APIOrigin       string
 	Email           string
 	Password        string
 	SubscriptionURL string
@@ -151,9 +146,6 @@ func (s *Service) PrimeSource(sourceName string) bool {
 
 func (s *Service) sourceURL(sourceName string) string {
 	switch {
-	case sourceName == "local":
-		raw, _ := s.LocalSubscriptionURL()
-		return raw
 	case sourceName == "manual":
 		return strings.TrimSpace(s.Store.ManualURL())
 	case strings.HasPrefix(sourceName, "account:"):
@@ -175,6 +167,10 @@ func (s *Service) sourceURL(sourceName string) string {
 // Clash template). The tool shows both so the user can compare before trusting the
 // rewritten config.
 func (s *Service) DecodeURL(ctx context.Context, rawURL string) (LoginResult, error) {
+	// The tool also takes pasted content, not just a URL.
+	if raw := strings.TrimSpace(rawURL); !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return s.decodeInline(raw)
+	}
 	// An Apex download endpoint must be fetched with the client certificate, and
 	// the certificate has to be chosen before the request goes out: without it the
 	// panel answers 404 for every /v2 path, so sniffing the response first would
@@ -207,6 +203,66 @@ func (s *Service) DecodeURL(ctx context.Context, rawURL string) (LoginResult, er
 	}, nil
 }
 
+// renderApex decrypts one APXS container and templates it.
+func (s *Service) renderApex(body []byte) (LoginResult, error) {
+	raw, header, err := subscription.DecryptApexProfile(body)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	yamlText, err := subscription.ApplyTemplate(raw)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{YAML: yamlText, RawYAML: raw, Apex: &header}, nil
+}
+
+// decodeStoredValue turns a client-stored profile value into container bytes.
+// Newer clients prefix the base64 with a short tag and a colon.
+func decodeStoredValue(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if i := strings.IndexByte(value, ':'); i >= 0 && i < 40 {
+		value = value[i+1:]
+	}
+	return base64.StdEncoding.DecodeString(value)
+}
+
+// decodeInline handles content pasted without a URL: base64 of an APXS container
+// (what the client stores), base64 of an older profile, or plain text.
+func (s *Service) decodeInline(input string) (LoginResult, error) {
+	trimmed := strings.TrimSpace(input)
+	if blob, err := decodeStoredValue(trimmed); err == nil && len(blob) > 0 {
+		if subscription.IsAPXS(blob) {
+			return s.renderApex(blob)
+		}
+		raw, err := subscription.DecryptProfile(blob)
+		if err == nil {
+			yamlText, err := subscription.ApplyTemplate(raw)
+			if err != nil {
+				return LoginResult{}, err
+			}
+			return LoginResult{YAML: yamlText, RawYAML: raw}, nil
+		}
+	}
+	raw, err := subscription.DecryptProfile([]byte(trimmed))
+	if err != nil {
+		return LoginResult{}, err
+	}
+	yamlText, err := subscription.ApplyTemplate(raw)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{YAML: yamlText, RawYAML: raw}, nil
+}
+
+// apexUserAgent is the `apex/<version>` User-Agent the CDN insists on. The
+// version comes from the cached remote config and only falls back to the
+// embedded default before the first config load.
+func (s *Service) apexUserAgent() string {
+	s.apexMu.Lock()
+	defer s.apexMu.Unlock()
+	return s.apexCfg.userAgent()
+}
+
 // decodeApexURL re-fetches an APXS subscription with the client certificate.
 //
 // The first fetch already proved the host answers, but without the certificate a
@@ -228,13 +284,7 @@ func (s *Service) decodeApexURL(ctx context.Context, rawURL string) (LoginResult
 	}
 	// Use the version from the cached remote config when available; the default
 	// is only a fallback for a link pasted before any config was fetched.
-	version := subscription.ApexDefaultVersion()
-	s.apexMu.Lock()
-	if s.apexCfg.Version != "" {
-		version = s.apexCfg.Version
-	}
-	s.apexMu.Unlock()
-	req.Header.Set("User-Agent", "apex/"+version)
+	req.Header.Set("User-Agent", s.apexUserAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return LoginResult{}, err
@@ -371,15 +421,9 @@ func (s *Service) Refresh(ctx context.Context, force bool) error {
 
 func (s *Service) Resolve(ctx context.Context, sourceName string) (resolvedSource, error) {
 	if sourceName == "" {
-		sourceName = "local"
+		sourceName = "manual"
 	}
 	switch {
-	case sourceName == "local":
-		raw, err := s.LocalSubscriptionURL()
-		if err != nil {
-			return resolvedSource{}, err
-		}
-		return resolvedSource{Source: model.Source{Kind: "local", Label: "本机客户端", URL: raw}}, nil
 	case sourceName == "manual":
 		raw := strings.TrimSpace(s.Store.ManualURL())
 		if raw == "" {
@@ -509,7 +553,7 @@ func (s *Service) fetchApexYAML(ctx context.Context, rawURL string) (LoginResult
 	if err != nil {
 		return LoginResult{}, err
 	}
-	req.Header.Set("User-Agent", "apex/"+subscription.ApexDefaultVersion())
+	req.Header.Set("User-Agent", s.apexUserAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return LoginResult{}, err
@@ -539,272 +583,20 @@ func (s *Service) fetchApexYAML(ctx context.Context, rawURL string) (LoginResult
 	}, nil
 }
 
-// apiEnvelope is the panel's response wrapper. Real deployments disagree on the
-// `status` type (bool, 0/1, or "1"/"true"), so it is decoded permissively instead
-// of as a plain bool; a strict bool breaks every endpoint on such panels.
-type apiEnvelope struct {
-	Status  flexibleBool    `json:"status"`
-	Data    json.RawMessage `json:"data"`
-	Message string          `json:"message"`
-}
-
-// flexibleBool accepts bool, number and string forms. Present reports whether the
-// field appeared at all, so callers can tell "absent" from "false".
-type flexibleBool struct {
-	value   bool
-	present bool
-}
-
-func (b *flexibleBool) UnmarshalJSON(raw []byte) error {
-	b.present = true
-	text := strings.Trim(strings.TrimSpace(string(raw)), `"`)
-	switch strings.ToLower(text) {
-	case "", "null":
-		b.present = false
-		return nil
-	case "1", "true", "yes", "ok", "success":
-		b.value = true
-		return nil
-	case "0", "false", "no", "error", "fail":
-		b.value = false
-		return nil
-	}
-	// Unknown literal: keep the raw payload out of the error so a WAF HTML page
-	// or an unexpected schema surfaces as a readable message, not a Go type error.
-	return fmt.Errorf("status 字段格式未知: %.40s", text)
-}
-
-// looksLikeHTML reports whether a response body is an HTML page (WAF, captcha,
-// error portal) rather than the JSON the API contract promises.
-func looksLikeHTML(body []byte) bool {
-	trimmed := strings.TrimSpace(string(body))
-	return strings.HasPrefix(trimmed, "<")
-}
-
 // LoginAccount resolves one password account.
 //
-// Apex / Speed is the panel this deployment talks to, so an account without an
-// explicit API origin is routed straight to LoginApex. The legacy /api/v1 flow
-// below only runs when the operator fills in an API origin by hand, i.e. when
-// pointing the tool at a different (Xboard) panel on purpose.
+// Apex / Speed is the only panel this tool talks to, so there is a single
+// protocol here. A stored subscription URL already carries the access key and is
+// reused as-is (the panel regenerates the node set on download); a stale or
+// rejected key falls through to a fresh Apex login.
 func (s *Service) LoginAccount(ctx context.Context, account model.Account) (*LoginResult, error) {
-	password, err := s.Protector.Decrypt(account.PasswordEnc)
-	if err != nil {
-		return nil, fmt.Errorf("密码解密失败: %w", err)
-	}
-	if password == "" {
-		return nil, errors.New("该账号缺少邮箱或密码，请重新填写")
-	}
-
-	origin := strings.TrimSpace(account.APIOrigin)
-	if origin == "" {
-		// No explicit panel: this is an Apex account by definition. A stored
-		// subscription URL already carries the access key, so reuse it instead of
-		// logging in again: the panel re-generates the node set on download, and a
-		// fresh login only adds a round trip on top of that.
-		if url := strings.TrimSpace(account.SubscriptionURL); url != "" {
-			if result, err := s.fetchApexYAML(ctx, url); err == nil {
-				_ = s.Store.UpdateAccountRuntime(account.ID, result.SubscriptionURL, 0, time.Now().Unix(), result.UserInfo, "")
-				return &result, nil
-			}
-			// A stale or rejected key falls through to a fresh login below.
-		}
-		return s.LoginApex(ctx, account)
-	}
-
-	base, err := url.Parse(origin)
-	if err != nil || base.Scheme != "https" || base.Host == "" {
-		return nil, errors.New("API 域名必须使用 HTTPS")
-	}
-	base.Path = ""
-	base.RawQuery = ""
-	base.Fragment = ""
-
-	jar, _ := cookiejar.New(nil)
-	apiClient := &http.Client{
-		Timeout:   15 * time.Second,
-		Jar:       jar,
-		Transport: s.Transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	subClient := &http.Client{Timeout: 15 * time.Second, Jar: jar, Transport: s.Transport}
-	authorization := ""
-
-	apiJSON := func(path string, form url.Values) (json.RawMessage, error) {
-		endpoint := base.String() + "/api/v1" + path
-		method := http.MethodGet
-		var body io.Reader
-		if form != nil {
-			method = http.MethodPost
-			body = strings.NewReader(form.Encode())
-		}
-		req, reqErr := http.NewRequestWithContext(ctx, method, endpoint, body)
-		if reqErr != nil {
-			return nil, reqErr
-		}
-		req.Header.Set("User-Agent", subscription.APIUA)
-		req.Header.Set("Accept", "application/json")
-		if authorization != "" {
-			req.Header.Set("Authorization", authorization)
-		}
-		if form != nil {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-		resp, reqErr := apiClient.Do(req)
-		if reqErr != nil {
-			return nil, reqErr
-		}
-		defer resp.Body.Close()
-		data, readErr := subscription.ReadCapped(resp)
-		if readErr != nil {
-			return nil, readErr
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, subscription.ErrorFromResponse(resp, data)
-		}
-		var env apiEnvelope
-		if err := json.Unmarshal(data, &env); err != nil {
-			// A WAF/captcha page is HTML, not JSON; say so instead of leaking a
-			// Go decoder error that reads like a client bug.
-			if looksLikeHTML(data) {
-				return nil, errors.New("接口返回了网页而不是 JSON，可能被 WAF / 人机验证拦截；请换网络或稍后重试")
-			}
-			return nil, fmt.Errorf("接口返回非 JSON: %w", err)
-		}
-		if env.Status.present && !env.Status.value {
-			if env.Message != "" {
-				return nil, fmt.Errorf("接口返回失败 / %s", env.Message)
-			}
-			return nil, errors.New("接口返回失败")
-		}
-		return env.Data, nil
-	}
-
-	loginData, err := apiJSON("/passport/auth/login", url.Values{
-		"email":    {account.Email},
-		"password": {password},
-	})
-	if err != nil {
-		return nil, err
-	}
-	var login struct {
-		AuthData string `json:"auth_data"`
-	}
-	if err := json.Unmarshal(loginData, &login); err != nil || login.AuthData == "" {
-		return nil, errors.New("没有返回 data.auth_data，需核对该 API 的登录协议")
-	}
-	authorization = login.AuthData
-
-	if _, err := apiJSON("/user/info", nil); err != nil {
-		return nil, err
-	}
-	subscribeData, err := apiJSON("/user/getSubscribe", nil)
-	if err != nil {
-		return nil, err
-	}
-	var subscribe struct {
-		URL string `json:"subscribe_url"`
-	}
-	if err := json.Unmarshal(subscribeData, &subscribe); err != nil || subscribe.URL == "" {
-		return nil, errors.New("没有返回 data.subscribe_url")
-	}
-
-	subscribeURL, err := url.Parse(subscribe.URL)
-	if err != nil {
-		return nil, err
-	}
-	subscribeURL = base.ResolveReference(subscribeURL)
-	if subscribeURL.Hostname() == "api.example.com" {
-		subscribeURL.Scheme = base.Scheme
-		subscribeURL.Host = base.Host
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, subscribeURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", subscription.SubscriptionUA)
-	if subscribeURL.Scheme == base.Scheme && subscribeURL.Host == base.Host {
-		req.Header.Set("Authorization", authorization)
-	}
-	resp, err := subClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := subscription.ReadCapped(resp)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, subscription.ErrorFromResponse(resp, body)
-	}
-	raw, err := subscription.DecryptProfile(body)
-	if err != nil {
-		return nil, err
-	}
-	yamlText, err := subscription.ApplyTemplate(raw)
-	if err != nil {
-		return nil, err
-	}
-	userInfo := subscription.ParseUserInfo(resp.Header.Get("Subscription-Userinfo"))
-	result := &LoginResult{
-		SubscriptionURL: subscribeURL.String(),
-		YAML:            yamlText,
-		RawYAML:         raw,
-		UserInfo:        userInfo,
-	}
-	_ = s.Store.UpdateAccountRuntime(account.ID, result.SubscriptionURL, time.Now().Unix(), 0, userInfo, "")
-	return result, nil
-}
-
-// ------------------------------------------------------------- local source
-
-func (s *Service) LocalSubscriptionURL() (string, error) {
-	if raw := strings.TrimSpace(os.Getenv("FASTLINK_SUB_URL")); raw != "" {
-		return raw, nil
-	}
-	appData := os.Getenv("APPDATA")
-	if appData == "" {
-		return "", errors.New("未找到 APPDATA")
-	}
-	dir := filepath.Join(appData, "FastLink", "FastLink")
-
-	currentID := int64(0)
-	if raw, err := os.ReadFile(filepath.Join(dir, "shared_preferences.json")); err == nil {
-		var prefs map[string]json.RawMessage
-		if json.Unmarshal(raw, &prefs) == nil {
-			var flutter string
-			if json.Unmarshal(prefs["flutter.config"], &flutter) == nil {
-				var fc struct {
-					CurrentProfileID int64 `json:"currentProfileId"`
-				}
-				_ = json.Unmarshal([]byte(flutter), &fc)
-				currentID = fc.CurrentProfileID
-			}
+	if url := strings.TrimSpace(account.SubscriptionURL); url != "" {
+		if result, err := s.fetchApexYAML(ctx, url); err == nil {
+			_ = s.Store.UpdateAccountRuntime(account.ID, result.SubscriptionURL, 0, time.Now().Unix(), result.UserInfo, "")
+			return &result, nil
 		}
 	}
-
-	dbPath := filepath.Join(dir, "database.sqlite")
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
-	if err != nil {
-		return "", err
-	}
-	defer db.Close()
-
-	var rawURL string
-	if currentID > 0 {
-		_ = db.QueryRow(`SELECT url FROM profiles WHERE id = ?`, currentID).Scan(&rawURL)
-	}
-	if rawURL == "" {
-		_ = db.QueryRow(`SELECT url FROM profiles ORDER BY id LIMIT 1`).Scan(&rawURL)
-	}
-	if rawURL == "" {
-		return "", errors.New("未找到客户端订阅")
-	}
-	return rawURL, nil
+	return s.LoginApex(ctx, account)
 }
 
 // ----------------------------------------------------------------- accounts
@@ -832,7 +624,6 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 		return nil, errors.New("未知的账号类型")
 	}
 	email := strings.TrimSpace(input.Email)
-	apiOrigin := strings.TrimSpace(input.APIOrigin)
 	subURL := strings.TrimSpace(input.SubscriptionURL)
 
 	// Per-kind required fields. Editing a password account may omit the password
@@ -858,7 +649,7 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 	// empty email would otherwise collapse them into one.
 	if existing == nil && kind == model.KindPassword && email != "" {
 		for i := range accounts {
-			if accounts[i].Kind == model.KindPassword && accounts[i].Email == email && accounts[i].APIOrigin == apiOrigin {
+			if accounts[i].Kind == model.KindPassword && accounts[i].Email == email {
 				existing = &accounts[i]
 				break
 			}
@@ -931,7 +722,6 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 		Kind:            kind,
 		ID:              id,
 		Label:           label,
-		APIOrigin:       apiOrigin,
 		Email:           email,
 		PasswordEnc:     passwordEnc,
 		HasPassword:     passwordEnc != "",
@@ -977,8 +767,6 @@ func (s *Service) SourceMeta(sourceName string) (label, host string) {
 			return label, host
 		}
 		return host, host
-	case sourceName == "local":
-		return "本机客户端", ""
 	case strings.HasPrefix(sourceName, "account:"):
 		account, _ := s.Store.Account(strings.TrimPrefix(sourceName, "account:"))
 		if account == nil {
@@ -1024,7 +812,7 @@ func (s *Service) DeleteAccount(id string) error {
 func (s *Service) SetSource(sourceName, manualURL string) error {
 	sourceName = strings.TrimSpace(sourceName)
 	switch {
-	case sourceName == "local" || sourceName == "manual":
+	case sourceName == "manual":
 	case strings.HasPrefix(sourceName, "account:"):
 		account, err := s.Store.Account(strings.TrimPrefix(sourceName, "account:"))
 		if err != nil || account == nil {
@@ -1055,8 +843,6 @@ func (s *Service) State() StateData {
 	}
 	if label == "" {
 		switch {
-		case active == "local":
-			label = "本机客户端"
 		case active == "manual":
 			label = "手动链接"
 		case strings.HasPrefix(active, "account:"):

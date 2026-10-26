@@ -59,7 +59,6 @@ cmd/fastlink-tool
 
 ```text
 active source
-  ├─ local   -> %APPDATA%\FastLink\FastLink\shared_preferences.json + database.sqlite
   ├─ account -> accounts.subscription_url
   │            没有 URL -> LoginAccount
   └─ manual  -> settings.manualUrl
@@ -70,16 +69,15 @@ Resolve -> FetchSubscription (UA, 4MB, HTTPS/SSRF guard)
         -> cache + probe
 ```
 
-账号登录：
+账号登录（只有 Apex / Speed v2 一种协议）：
 
 ```text
-POST /api/v1/passport/auth/login  {email,password} -> auth_data
-GET  /api/v1/user/info            Authorization
-GET  /api/v1/user/getSubscribe    -> subscribe_url
-GET  subscribe_url                UA + same-origin Authorization / cookies
+POST {api}/{v2 auth path}      {email,password} -> auth_data + token
+GET  /v2/feed/access-token     Authorization    -> 流量/到期
+GET  /v2/feed/download?access_key=…            -> APXS 容器（mTLS）
 ```
 
-`400/401/403/404/410` 或 `invalid token` 会重登一次。
+`400/401/403/404/410` 或 `invalid token` 会重登一次。账号里已存 `subscription_url` 时直接复用它，跳过登录。
 
 ## API
 

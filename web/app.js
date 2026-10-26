@@ -1,8 +1,8 @@
-﻿import { qrSvg } from "/vendor/qr.mjs";
+import { qrSvg } from "/vendor/qr.mjs";
 
 const $ = (id) => document.getElementById(id);
 let state = null;
-let accounts = { active: "local", manualUrl: "", accounts: [] };
+let accounts = { active: "manual", manualUrl: "", accounts: [] };
 let addresses = [];
 let currentAddress = 0;
 // Which subscription variant the address card shows: "optimized" (Clash template
@@ -103,7 +103,7 @@ function renderTraffic() {
 
 function sourceLabel() {
   if (!state || !state.source) return "当前来源";
-  return state.source.label || (state.source.active === "local" ? "本机客户端" : state.source.active);
+  return state.source.label || state.source.active;
 }
 
 function renderInto(box, signature, build) {
@@ -119,10 +119,10 @@ function renderInto(box, signature, build) {
 
 function renderSources() {
   const box = $("sources");
-  const items = [{ key: "local", label: "本机客户端" }];
+  const items = [];
   for (const acc of accounts.accounts || []) items.push({ key: "account:" + acc.id, label: acc.label || acc.email || acc.id, error: acc.error });
   items.push({ key: "manual", label: "手动链接" });
-  const active = state && state.source ? state.source.active : "local";
+  const active = state && state.source ? state.source.active : "manual";
   renderInto(box, JSON.stringify({ items: items.map((i) => [i.key, i.label, i.error || ""]), active }), (b) => {
     for (const item of items) {
       const btn = document.createElement("button");
@@ -305,11 +305,33 @@ function accountDerived(acc) {
   return { on, cls: "st-pending", text: "待登录", title: "待登录" };
 }
 
+// navigator.clipboard 只在安全上下文存在；面板常用 http://192.168.x.x:8787
+// 打开，那里它是 undefined，因此退回到隐藏 textarea + execCommand。
+async function copyText(text) {
+  if (navigator.clipboard) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* 落到下面的兜底 */ }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  area.remove();
+  return ok;
+}
+
 function accountMeta(acc) {
-  // 第 2 行文本：错误时替换为错误文案，否则按类型给标识信息。
-  if (acc.error) return { text: acc.error, isErr: true };
-  if (acc.kind === "link") return { text: acc.subscriptionUrl || "未填写订阅链接", isErr: !acc.subscriptionUrl };
-  return { text: [acc.email, acc.apiOrigin].filter(Boolean).join(" · ") || "未填写登录信息", isErr: false };
+  // 第 2 行文本：错误时替换为错误文案，否则给标识信息 + 机场原始订阅链接。
+  // 链接很长，靠 CSS 截断，完整值放 title，点击可复制。
+  if (acc.error) return { text: acc.error, isErr: true, copy: "" };
+  if (acc.subscriptionUrl) {
+    const text = acc.kind === "link" ? acc.subscriptionUrl : [acc.email, acc.subscriptionUrl].filter(Boolean).join("  ·  ");
+    return { text, isErr: false, copy: acc.subscriptionUrl };
+  }
+  if (acc.kind === "link") return { text: "未填写订阅链接", isErr: true, copy: "" };
+  return { text: [acc.email].filter(Boolean).join(" · ") || "未填写登录信息", isErr: false, copy: "" };
 }
 
 function renderAccounts() {
@@ -317,7 +339,7 @@ function renderAccounts() {
   const list = accounts.accounts || [];
   setText($("accCount"), String(list.length));
   const sig = JSON.stringify({
-    list: list.map((a) => [a.id, a.kind, a.label, a.email, a.apiOrigin, a.subscriptionUrl, a.error, a.hasPassword]),
+    list: list.map((a) => [a.id, a.kind, a.label, a.email, a.subscriptionUrl, a.error, a.hasPassword]),
     active: state && state.source && state.source.active,
   });
   renderInto(box, sig, (b) => {
@@ -337,24 +359,31 @@ function renderAccounts() {
         `<div class="accname" title="${escapeHTML(name)}">` +
         `<span class="acctype" title="${isPw ? "密码账号" : "链接账号"}">${isPw ? "密" : "链"}</span>` +
         `<span title="${escapeHTML(name)}">${escapeHTML(name)}</span>` +
-        (d.on ? '<span class="pill">当前</span>' : "") +
         `</div>` +
         `<span class="accstate ${d.cls}" title="${escapeHTML(d.title)}">${escapeHTML(d.text)}</span>` +
         `</div>` +
-        `<div class="accmeta${meta.isErr ? "" : " muted"}" title="${escapeHTML(meta.text)}">` +
+        `<div class="accmeta${meta.isErr ? "" : " muted"}${meta.copy ? " copy" : ""}" title="${escapeHTML(meta.text)}${meta.copy ? " →点击复制" : ""}">` +
         (meta.isErr ? `<span class="err-text">${escapeHTML(meta.text)}</span>` : escapeHTML(meta.text)) +
         `</div>` +
         `<div class="accops">` +
-        `<button class="act" ${d.on ? "disabled" : ""} type="button">${d.on ? "当前" : "激活"}</button>` +
+        // The state chip already says 当前, so the active row drops its enable
+        // button instead of repeating the word next to it.
+        (d.on ? "" : `<button class="act" type="button">激活</button>`) +
         `<button class="edit" type="button">编辑</button>` +
         `<button class="delete" type="button">删除</button>` +
         `</div>`;
-      item.querySelector(".act").onclick = () => activateAccount(acc.id, name);
+      item.querySelector(".act")?.addEventListener("click", () => activateAccount(acc.id, name));
+      if (meta.copy) item.querySelector(".accmeta").addEventListener("click", () => copySubscriptionUrl(meta.copy));
       item.querySelector(".edit").onclick = () => enterEditMode(acc);
       item.querySelector(".delete").onclick = () => deleteAccount(acc.id, name);
       b.appendChild(item);
     }
   });
+}
+
+async function copySubscriptionUrl(url) {
+  if (await copyText(url)) setHint("accHint", "订阅链接已复制", true);
+  else setHint("accHint", "复制失败，请手动选中");
 }
 
 async function activateAccount(id, name) {
@@ -469,7 +498,6 @@ function enterEditMode(acc) {
   $("verifyNote").classList.toggle("hidden", formType !== "pw");
   setText($("typeNote"), formType === "pw" ? "填写邮箱和密码即可，面板地址会自动识别。" : "只需要一条订阅链接，直接拉取，无密码。Apex / Speed 的 access_key 链接同样支持。");
   $("accLabel").value = acc.label || "";
-  $("accOrigin").value = acc.apiOrigin || "";
   $("accEmail").value = acc.email || "";
   $("accPassword").value = "";
   $("accPassword").placeholder = "留空则不修改";
@@ -485,19 +513,17 @@ function exitEditMode() {
   $("btnCancelEdit").classList.add("hidden");
   $("accPassword").placeholder = "必填";
   $("pwNote").classList.add("hidden");
-  for (const id of ["accLabel", "accOrigin", "accEmail", "accPassword", "accSubUrl"]) $(id).value = "";
+  for (const id of ["accLabel", "accEmail", "accPassword", "accSubUrl"]) $(id).value = "";
   setHint("accFormHint", "");
   setFormType(formType);
 }
 
 async function verifyAccount() {
   const payload = {
-    apiOrigin: $("accOrigin").value.trim(),
     email: $("accEmail").value.trim(),
     password: $("accPassword").value,
   };
-  // API 域名可留空：后端会回退到默认面板域名，现有账号的 apiOrigin 也是空的。
-  // 这里若强制必填，会与后端校验不一致，导致这类账号无法验证或保存。
+  // 面板地址不再由用户填写：Apex 域名从远端配置自动解析。
   if (!payload.email) return setHint("accFormHint", "请填写邮箱");
   if (!payload.password) return setHint("accFormHint", "请填写密码");
   setHint("accFormHint", "正在验证…", true);
@@ -515,10 +541,9 @@ async function saveAccount() {
   payload.label = $("accLabel").value.trim();
   if (editingId) payload.id = editingId;
   if (isPw) {
-    payload.apiOrigin = $("accOrigin").value.trim();
     payload.email = $("accEmail").value.trim();
     payload.password = $("accPassword").value;
-    // API 域名可留空（后端回退到默认面板域名）；邮箱必填。
+    // 邮箱必填。
     if (!payload.email) return setHint("accFormHint", "请填写邮箱");
     // 编辑时留空 = 不修改密码；新增时必填。
     if (!editingId && !payload.password) return setHint("accFormHint", "请填写密码");
@@ -743,14 +768,15 @@ for (const tab of document.querySelectorAll(".variant-tab")) {
 $("btnCopy").onclick = async () => {
   const text = $("subUrl").textContent;
   const label = currentVariant === "raw" ? "原始订阅链接" : "订阅链接";
-  try { await navigator.clipboard.writeText(text); setHint("sourceHint", `${label}已复制`, true); }
-  catch { setHint("sourceHint", "复制失败，请手动选择链接"); }
+  if (await copyText(text)) setHint("sourceHint", `${label}已复制`, true);
+  else setHint("sourceHint", "复制失败，请手动选择链接");
 };
 $("btnOpen").onclick = () => window.open($("subUrl").textContent, "_blank");
 $("btnDownload").onclick = () => { location.href = $("subUrl").textContent; };
 $("btnCopyNodes").onclick = async () => {
   const text = ((state && state.nodeList) || []).map((n) => n.name + (n.server ? "  " + n.server : "")).join("\n");
-  try { await navigator.clipboard.writeText(text || "暂无节点"); setHint("sourceHint", "节点列表已复制", true); } catch { setHint("sourceHint", "复制失败"); }
+  if (await copyText(text || "暂无节点")) setHint("sourceHint", "节点列表已复制", true);
+  else setHint("sourceHint", "复制失败");
 };
 $("tabPw").onclick = () => setFormType("pw");
 $("tabLink").onclick = () => setFormType("link");
@@ -766,21 +792,31 @@ $("btnQuit").onclick = async () => {
   await fetch("/api/v1/quit", { method: "POST" });
   document.body.innerHTML = '<div class="login"><div class="card">服务已退出</div></div>';
 };
-$("btnToolLocal").onclick = async () => {
-  try {
-    const data = await api("/api/v1/local-sub");
-    $("toolInput").value = data.url || "";
-    setHint("toolHint", "已填入本机客户端订阅", true);
-  } catch (err) { setHint("toolHint", err.message); }
-};
 $("btnToolRun").onclick = decryptTool;
+// 结果区排版：默认上下，可切左右对照；选择记在本地，下次打开沿用。
+let toolLayout = localStorage.getItem("fl.toollayout") === "h" ? "h" : "v";
+function renderToolLayout() {
+  $("toolResult").classList.toggle("layout-h", toolLayout === "h");
+  for (const btn of document.querySelectorAll("#toolLayout button")) {
+    const on = btn.dataset.layout === toolLayout;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+for (const btn of document.querySelectorAll("#toolLayout button")) {
+  btn.onclick = () => {
+    if (btn.dataset.layout === toolLayout) return;
+    toolLayout = btn.dataset.layout === "h" ? "h" : "v";
+    localStorage.setItem("fl.toollayout", toolLayout);
+    renderToolLayout();
+  };
+}
+renderToolLayout();
 const copyPane = async (id, label) => {
   const text = $(id).value;
   if (!text) return setHint("toolHint", "没有可复制的内容");
-  try {
-    await navigator.clipboard.writeText(text);
-    setHint("toolHint", `${label}已复制（${formatBytes(new Blob([text]).size)}）`, true);
-  } catch { setHint("toolHint", "复制失败，请手动选择文本"); }
+  if (await copyText(text)) setHint("toolHint", `${label}已复制（${formatBytes(new Blob([text]).size)}）`, true);
+  else setHint("toolHint", "复制失败，请手动选择文本");
 };
 $("btnToolCopy").onclick = () => copyPane("toolYaml", "YAML ");
 $("btnRawCopy").onclick = () => copyPane("rawYaml", "原始订阅 ");

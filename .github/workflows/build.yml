@@ -43,13 +43,8 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # The nameserver tests fail on master (nameserver_test.go: "key missing")
-      # and are unrelated to the Apex work; they are excluded so a pre-existing
-      # failure does not block builds. Remove the -skip list once they are fixed.
       - name: go test
-        run: >
-          go test ./...
-          -skip "TestUpstreamNameserversPrependedBeforeDefaults|TestUpstreamNameserversDedupedAgainstDefaults|TestNoUpstreamNameserversLeavesDefaultsAdjacent"
+        run: go test ./...
 
       - name: Build Windows exe
         shell: pwsh

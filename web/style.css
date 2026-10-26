@@ -146,6 +146,8 @@ textarea{min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monos
 /* 第 2 行：标识信息或错误文案，单行锁 16px，有错/无错高度一致。 */
 .accmeta{grid-area:meta;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:16px;line-height:16px;min-width:0}
 .accmeta .err-text{color:var(--err)}
+.accmeta.copy{cursor:pointer}
+.accmeta.copy:hover{color:var(--text)}
 .acctype{flex:none;width:16px;height:16px;border-radius:5px;display:inline-grid;place-items:center;
   font-size:10px;line-height:16px;background:rgba(59,130,246,.18);color:#93c5fd;font-weight:700}
 .accitem.link .acctype{background:rgba(142,160,196,.15);color:var(--muted)}
@@ -160,7 +162,7 @@ textarea{min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monos
 .accops .act{height:28px;min-width:52px;padding:0 12px;border:0;border-radius:8px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap;text-align:center;
   background:var(--accent);color:#fff}
 .accops .act:hover{filter:brightness(1.12)}
-.accops .act:disabled{background:transparent;border:1px solid var(--line);color:var(--ok);cursor:default;filter:none}
+/* 当前账号不渲染激活按钮（状态芯片已经写了「当前」），故不需要 disabled 样式。 */
 .accops .edit{height:28px;padding:0 12px;background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--text);cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
 .accops .edit:hover{border-color:var(--muted);color:#fff}
 .accops .delete{height:28px;padding:0 12px;background:transparent;color:var(--err);border:1px solid var(--line);border-radius:8px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
@@ -218,6 +220,19 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--muted)
    Slightly shorter than the converted pane since it is for comparison, not editing. */
 .raw-head{margin-top:18px}
 .raw-yaml{height:300px;color:var(--muted)}
+/* 结果区排版：默认上下堆叠，可切左右对照；窄屏强制回到上下。 */
+.tool-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.tool-bar .label{margin-bottom:0}
+.tool-panes{display:grid;grid-template-columns:1fr;gap:16px}
+#toolResult.layout-h .tool-panes{grid-template-columns:1fr 1fr;gap:14px}
+#toolResult.layout-h .raw-head{margin-top:0}
+#toolResult.layout-h .tool-yaml{height:460px}
+#toolResult.layout-h .raw-yaml{height:460px}
+@media(max-width:900px){
+  #toolResult.layout-h .tool-panes{grid-template-columns:1fr}
+  #toolResult.layout-h .raw-head{margin-top:18px}
+  #toolResult.layout-h .tool-yaml,#toolResult.layout-h .raw-yaml{height:340px}
+}
 @media(max-width:760px){.raw-yaml{height:240px}}
 /* Variant switch for the subscription address: optimized (templated) vs raw. */
 .variant-tabs{display:inline-flex;gap:4px;padding:3px;margin-top:10px;background:var(--field);border-radius:9px}

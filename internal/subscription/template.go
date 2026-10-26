@@ -8,7 +8,13 @@ import (
 )
 
 //go:embed template.yaml
-var templateText string
+var embeddedTemplate string
+
+// templateText is the embedded template with LF endings, whatever the checkout
+// did to the file. Git for Windows rewrites it to CRLF when core.autocrlf is on,
+// and the injection below matches literal "\n" sequences, so the endings are
+// normalised once here instead of being re-checked at every call site.
+var templateText = strings.ReplaceAll(strings.TrimPrefix(embeddedTemplate, "\ufeff"), "\r\n", "\n")
 
 var (
 	controllerLine = regexp.MustCompile(`(?m)^external-controller:.*\n?`)

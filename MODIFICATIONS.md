@@ -994,9 +994,180 @@ health            ok
 - **单实例互斥锁**：已有实例运行时新实例静默退出（`Local\FastLinkTool`），表现为「双击没反应」。需先结束 `fastlink-tool.exe` 进程。
 - **`go run` 不会热编译**：源码改动后若不重启，跑的还是旧二进制，`/api/v1/*` 会全部 404。
 
+### internal/subscription/、.gitattributes — 模板换行归一，修掉本机 build 脚本报错
+
+**功能**：修掉 `scripts/build.ps1` 在本机跑到 `go test ./...` 就抛 `go test failed` 的问题（3 个 `nameserver` 测试 `key missing`）。
+
+**根因**：本仓库 `core.autocrlf=true` 且没有 `.gitattributes`，checkout 时 `go:embed` 的 `internal/subscription/template.yaml` 被写成 CRLF（实测 620 个 CRLF、0 个纯 LF）。模板里 `  proxy-server-nameserver:` 后跟的是 `\r\n`，而断言找的是 `"  proxy-server-nameserver:\n"`，因此必然 `key missing`。CI 上一直没暴露，是因为 `build.yml` 用 `-skip` 把这 3 个测试跳掉了。
+
+**修改内容**：
+
+- `template.go`：embed 拆成两个变量，`templateText` 在包初始化时做一次 `\r\n → \n`（顺带剥 BOM），让注入逻辑与换行无关；`ExtractProxiesBlock` / `upstreamNameservers` 对**输入订阅**的既有归一保持不变（输入是网络字节，仍需每次处理）。
+- 新增 `.gitattributes`，只钉住 `internal/subscription/template.yaml text eol=lf`，不动其它文件，避免整仓重归一产生大面积 diff。
+- `.github/workflows/build.yml`：`go test ./...` 去掉 `-skip`，并删除解释 skip 的注释。
+
+**涉及文件**：`internal/subscription/template.go`（`embeddedTemplate` / `templateText` 初始化）、`.gitattributes`（新增）、`.github/workflows/build.yml`（`go test` 步骤）。
+
+**验证基线**：
+
+```text
+git check-attr text eol -- internal/subscription/template.yaml
+  -> text: set / eol: lf
+删除后重新 checkout，模板为 LF：CRLF=0  LF=620  字节=23565
+go test ./...                            （无 -skip）全绿
+.\scripts\build.ps1 -Version 1.2.1       exit=0，exe 12,695,552 B + sha256 落盘
+产物实测（新构建 exe，真实面板，74 节点）
+  /sub  200  45850 B  CRLF=0  LF=695
+  proxy-server-nameserver 段：3 条机场 DoH 在前，模板默认值在后
+  proxies / proxy-groups / rules 齐全，external-controller 已移除
+```
+
+### internal/service/、internal/store/ — 遗留 apiOrigin 导致刷新 404 时自动回落到 Apex
+
+**功能**：修掉「打包 exe 选中旧账号后拉订阅报 HTTP 404」以及「启动时闪两下 cmd 窗口」。
+
+**根因**：旧版本给账号写过 `api_origin=https://flaxapi.apiv2.a047.com`。`LoginAccount` 只要看到 `apiOrigin` 非空就走 `/api/v1` 分支，而该主机迁移到 Apex 后 `/api/v1/*` 全返回 404 nginx 页（`curl` 实测 404）。账号因此永远登不上：先 404，再被当成普通失败，没有任何回落。
+
+**修改内容**：
+
+- `LoginAccount` 拆成「路由器 + `loginLegacy`」：`apiOrigin` 为空仍走 Apex；非空仍先走旧协议，但返回 `404/410` 时用同一套凭据再走一次 `LoginApex`，成功即 `SetAccountOrigin(id, "")` 把死域名清掉，后续登录不再白跑一次。
+- 新增 `Store.SetAccountOrigin`。
+- `fetchApexYAML` 的 UA 改为 `s.apexUserAgent()`（新增）：原先硬用内置默认版本，与 `decodeApexURL` 不一致；版本应当来自远端配置缓存。
+- `platform`：两处 `netsh` 调用收进 `netsh()` 帮助函数并设 `SysProcAttr{HideWindow: true}`。GUI 子系统的发布版每调一次控制台程序就闪一个黑框，设置页一次检测正好两下。
+
+**涉及文件**：`internal/service/service.go`（`LoginAccount`、`loginLegacy`、`apexUserAgent`、`fetchApexYAML`、`decodeApexURL`）、`internal/store/store.go`（`SetAccountOrigin`）、`internal/platform/firewall_windows.go`（`netsh`）。
+
+**验证基线**（新构建 exe，真实面板，命中同一台机器上的遗留账号）：
+
+```text
+选中遗留账号（apiOrigin=flaxapi.apiv2.a047.com）
+  修复前  nodes=0   error=HTTP 404 / <nginx 404 页>
+  修复后  nodes=74  error=''  apiOrigin=''  subscriptionUrl 已回写
+再刷新   200  544ms  74 节点  probeError 空
+state    healthy=true nodes=74
+/sub     200  45789 B  proxies / proxy-groups / rules 齐全
+net-diag 防火墙字段仍正常解析（Domain 已启用、ruleFound=false）
+```
+
+### 全仓 — 删除机场侧 v1 协议，账号只走 Apex v2
+
+**功能**：把 Xboard 风格的 `/api/v1/passport/*` 登录链路整体移除，面板只剩 v2 一种协议。
+
+**根因（为什么删而不是留）**：v1 那条路唯一还活着的用途是「手填 API 域名连别的 Xboard 面板」，但常见部署全是 Apex，且老账号带着退役域名时还要靠上一节的 404 回落兜底；两条协议并存等于每次登录多一次可能 404 的往返。
+
+**修改内容**：
+
+- `LoginAccount` 只剩两步：已存 `subscription_url` 直接 `fetchApexYAML` 复用，否则 `LoginApex`；`loginLegacy` 整个函数删除。
+- 一并删除只服务于 v1 的部件：`apiEnvelope` / `flexibleBool` / `looksLikeHTML`（含 `envelope_test.go`）、`subscription.APIUA`、`Store.SetAccountOrigin`。
+- `apiOrigin` 字段从 `model.Account`、`AccountInput`、两处 HTTP DTO、`web/index.html` 的表单行、`web/app.js` 的读取/提交/列表指纹里全部移除；账号去重改成「同类型 + 同邮箱」，因为面板只剩一个。
+- `store`：`accounts` 建表语句、`INSERT`/`UPSERT`/`SELECT`/`scanAccount` 里的 `api_origin` 全部去掉，索引由 `(email, api_origin)` 改为 `email`。已存在的库仍留着这一列（`NOT NULL DEFAULT ''`），新代码不读不写，不需要迁移。
+- `service_test.go` 的登录用例改写成 v2 全链路（`/v2` 登录 + 业务接口 + APXS 下载），为此在 `subscription` 导出 `ApexProfileKey()` 供夹具构造容器。
+- `docs/ARCHITECTURE.md` 的登录流程段同步为 v2。
+
+**涉及文件**：`internal/service/service.go`、`internal/service/service_test.go`、`internal/service/envelope_test.go`（删除）、`internal/model/model.go`、`internal/store/store.go`、`internal/httpapi/server.go`、`internal/subscription/apex.go`、`internal/subscription/fetch.go`、`web/index.html`、`web/app.js`、`docs/ARCHITECTURE.md`。
+
+**验证基线**：
+
+```text
+go build / go vet / go test ./...（含改写后的 v2 登录用例）  全绿
+旧库（仍有 api_origin 列）启动、列表、保存、登录、刷新      正常，无 SQL 报错
+POST /api/v1/accounts  不带 apiOrigin → 命中同邮箱旧账号，未产生重复行
+POST /api/v1/account（仅验证） 200
+refresh 200 → 74 节点；state healthy=true
+页面与 app.js 中 accOrigin 出现 0 次
+```
+
+### web/ — 账号行去掉重复的「当前」标记
+
+**功能**：当前账号那一行原本同时出现三个「当前」：名称旁的灰底标签、右侧绿色状态芯片、操作列里置灰的激活按钮。
+
+**修改内容**：删掉名称旁的 `pill` 标签，并在当前账号上不再渲染激活按钮（状态芯片已表达该语义）。按钮组仍右对齐，行高不变（实测两行同为 65px，右侧留白同为 12px）。随之删掉只有该按钮用到的 `.accops .act:disabled` 规则；`.pill` 样式保留，节点数/账号数仍在用。
+
+**涉及文件**：`web/app.js`（`renderAccounts`）、`web/style.css`（`.accops .act:disabled`）。
+
+**验证基线**：
+
+```text
+当前行 DOM      密 | v2only | 当前   按钮：编辑 删除
+其他行 DOM      链 | zz-link | 已保存订阅   按钮：激活 编辑 删除
+两行 rowHeight 均 65，ops 右对齐留白均 12px
+整页「当前」出现 1 次（账号行内）
+```
+
+### web/ — 账号卡显示机场原始订阅链接 + 复制的非安全上下文兜底
+
+**功能**：账号卡第二行原本只显示邮箱，机场真实订阅链接没有任何地方能看到。现在有链接的账号直接把链接显示出来（地址过长时省略号截断，完整值在 `title`），点这一行即复制。
+
+**修改内容**：
+
+- `accountMeta`：错误文案优先；有 `subscriptionUrl` 时返回 `邮箱 · 链接`（链接账号就是链接本身）并带 `copy` 标记；无链接时退回邮箱/占位文案。
+- 渲染时给该行加 `copy` 类与点击复制，复制成功在 `#accHint` 提示。
+- 新增 `copyText`：`navigator.clipboard` 只在安全上下文可用，而面板常规用法是 `http://192.168.x.x:8787`（非安全上下文，`navigator.clipboard` 为 undefined），故补隐藏 textarea + `execCommand("copy")` 兜底；顺带把原有三个复制按钮（订阅地址、节点列表、解密两栏）也切到该函数，否则它们在局域网 http 下同样静默失效。
+- `style.css`：`.accmeta.copy{cursor:pointer}` 与 hover 提亮。
+
+**涉及文件**：`web/app.js`（`copyText`、`accountMeta`、`renderAccounts`、`copySubscriptionUrl`、三处复制按钮）、`web/style.css`。
+
+**验证基线**（浏览器实测）：
+
+```text
+第二行      demo@example.com  ·  https://flaxsub.web.ak005.com/v2/feed/download?access_key=…
+class       accmeta muted copy，行高仍 65px
+点击        提示「订阅链接已复制」，系统剪贴板取到完整链接
+订阅页复制   提示同样正确，不再走 navigator.clipboard 单路径
+```
+
+### 全仓 — 移除「读取本机客户端」订阅
+
+**功能**：整块去掉 `local` 数据源与其全部入口（来源列表项、解密工具的「读取本机客户端订阅」按钮、`GET /api/v1/local-sub`、`FASTLINK_SUB_URL` 环境变量、`storage` 里的客户端解析）。
+
+**为什么整块删而不是修**：客户端换了存储布局——`%APPDATA%\com.flapp.clients.apex\Fastlink-极速版\shared_preferences.json` 里 `flutter.config.profiles[].url` 不再是链接，而是 `前缀:base64` 的 103 字节 `APEX` 容器；没有 `database.sqlite`。该容器的 header 是 `APEX 02 <4B> <4B>`，不带 APXS 的 80 字节尾，且用 `apex_keys.go` 的 AES key 按 CTR（counter 0–3、全偏移非 nonce 位置）都解不出内容，`app.so` 里也找不到该 key 的 hex / base64 / 原始字节（客户端 7.2.3 已轮换）。继续留在代码里只会稳定报错。
+
+**修改内容**：
+
+- `internal/service/service.go`：删除 `LocalProfile` / `localAppDir` / `LocalProfile()` / `readClientProfiles` / `readLegacyProfile` / `LocalSubscriptionURL` / `resolveLocal` / `localSourceURL`；`sourceURL`、`SourceMeta`、`SetSource`、`Resolve` 的 `local` 分支去掉，`Resolve` 与 `Resolve("")` 的默认源改为 `manual`。
+- `internal/httpapi/server.go`：删除 `localSub` 与对应路由。
+- `internal/store/store.go`：`ActiveSource()` 默认值改为 `manual`；子来源 key 白名单去掉 `local`；新增 `migrateLocalSource()`（`Open` 时若 `active` 仍是 `local`，迁到首个账号，没有账号则落到 `manual`）。
+- `web`：来源列表去掉固定项、`btnToolLocal` 按钮与处理函数；页面中已无「本机客户端」字样。
+- 测试：删除 `local_test.go`；`server_test` 改用 `st.SetManualURL`；`store_test` 的子 key 断言换成 `manual`；新增两条 `Open` 迁移用例（有账号 / 无账号）。
+- `docs/ARCHITECTURE.md`：订阅流程去掉 `local` 分支。
+
+**涉及文件**：`internal/service/service.go`、`internal/httpapi/server.go`、`internal/store/store.go`、`internal/service/local_test.go`（删除）、`internal/httpapi/server_test.go`、`internal/store/store_test.go`、`web/app.js`、`web/index.html`、`docs/ARCHITECTURE.md`。
+
+**验证基线**：
+
+```text
+go build / go vet / go test ./...            全绿
+旧库 active=local 启动 → 自动迁到首个账号         state active=account:acc_…
+GET /api/v1/local-sub                        HTTP 404（已无此接口）
+refresh                                      200，74 节点
+来源列表                                      仅「v2only / 手动链接」，页面无「本机客户端」
+解密工具按钮                                  仅「解密 / 复制 YAML / 复制原始」
+```
+
+### web/ — 解密结果支持上下 / 左右两种排版
+
+**功能**：解密结果原本固定上下堆叠。现在结果区顶部有「上下 / 左右」切换，默认上下；切到左右即两栏对照。选择写入 `localStorage`，刷新后沿用；视口窄于 900px 时强制回到上下，避免两栏被挤成细条。
+
+**修改内容**：
+
+- `index.html`：结果区加一条工具条（标题 + `.type-switch` 分段控件），两个面板各包进 `.tool-pane`，`.tool-panes` 作为栅格容器；原先独立的 `raw-head` 外边距只在上下列表下保留。
+- `style.css`：`.tool-panes` 默认单列；`#toolResult.layout-h` 改为两列、两栏等高 460px，窄屏回落单列 340px。
+- `app.js`：`toolLayout` 状态 + `renderToolLayout()`（切类、同步 `aria-selected`），点击写入本地；启动即按记忆渲染。
+
+**涉及文件**：`web/index.html`、`web/style.css`、`web/app.js`。
+
+**验证基线**（实测 DOM 几何）：
+
+```text
+默认          两个面板 top=516 / 1012，宽 694，上下堆叠
+点「左右」    两个面板 top 相同、left=253 / 607、宽 340，并排；textarea 460px
+点「上下」    回到 516 / 1012 堆叠
+刷新          容器仍带 layout-h，「左右」保持选中，localStorage=fl.toollayout=h
+```
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
 - `dist/.run/` 保留着旧 Node 版的 `accounts.json` / `cache/*.json`，是 Go 版首次启动自动迁移的数据源，未随旧产物一并清理。
-- 版本号：本次改动未提交，故未递增 `cmd/fastlink-tool/main.go` 的 `version`；发布前需按 `scripts/build.ps1 -Version` 递增。
-- `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）在本次改动之前就已失败（`nameserver_test.go:34/56/157: key missing`），与 APXS 无关，未在本轮处理。
+- 版本号：本次为修复提交，`cmd/fastlink-tool/main.go` 的 `version` 已递增到 `1.2.1`；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
+- `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）曾因 CRLF checkout 失败（`nameserver_test.go:34/56/157: key missing`），已由模板换行归一 + `.gitattributes` 修掉，`build.yml` 的 `-skip` 已移除。

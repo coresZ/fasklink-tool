@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -57,10 +58,21 @@ func InvalidateFirewallCache() {
 // scripts/firewall.ps1 cannot drift apart.
 const RuleName = "FastLink-tool Panel"
 
+// netsh runs a netsh query with its console window suppressed.
+//
+// The release binary is built for the GUI subsystem, so every child process that
+// owns a console would otherwise flash a black window; the two netsh calls per
+// settings read looked like a stutter of cmd popups.
+func netsh(args ...string) ([]byte, error) {
+	cmd := exec.Command("netsh", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Output()
+}
+
 func inspectFirewallUncached() FirewallInfo {
 	info := FirewallInfo{Supported: true}
 
-	state, err := exec.Command("netsh", "advfirewall", "show", "allprofiles", "state").Output()
+	state, err := netsh("advfirewall", "show", "allprofiles", "state")
 	if err != nil {
 		info.Detail = "无法读取防火墙状态：" + err.Error()
 		return info
@@ -69,7 +81,7 @@ func inspectFirewallUncached() FirewallInfo {
 
 	// Querying by exact name keeps unrelated FastLink client rules (sing-tun,
 	// FastLink_Lite) from being mistaken for this panel's rule.
-	rule, ruleErr := exec.Command("netsh", "advfirewall", "firewall", "show", "rule", "name="+RuleName, "dir=in").Output()
+	rule, ruleErr := netsh("advfirewall", "firewall", "show", "rule", "name="+RuleName, "dir=in")
 	if ruleErr == nil {
 		text := string(rule)
 		// netsh exits 0 and prints "没有与指定标准相匹配的规则" when nothing matches.

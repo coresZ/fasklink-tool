@@ -39,7 +39,6 @@ func TestAuthAndSourceKeys(t *testing.T) {
 		_, _ = w.Write([]byte(ciphertext))
 	}))
 	defer profile.Close()
-	t.Setenv("FASTLINK_SUB_URL", profile.URL+"/local-sub")
 
 	root := t.TempDir()
 	st, err := store.Open(root)
@@ -47,6 +46,9 @@ func TestAuthAndSourceKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	if err := st.SetManualURL(profile.URL + "/manual"); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Default()
 	cfg.AccessKey = "panelkey"
 	svc := service.New(root, cfg, st)

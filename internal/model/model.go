@@ -12,13 +12,12 @@ type UserInfo struct {
 // browser; the API returns HasPassword instead.
 //
 // Kind distinguishes the two supported shapes:
-//   - "password": logs in with apiOrigin + email + password to obtain a subscription
+//   - "password": logs in with email + password through the Apex v2 API
 //   - "link":     only holds a subscription URL, no credentials
 type Account struct {
 	Kind            string    `json:"kind"`
 	ID              string    `json:"id"`
 	Label           string    `json:"label"`
-	APIOrigin       string    `json:"apiOrigin"`
 	Email           string    `json:"email"`
 	PasswordEnc     string    `json:"-"`
 	HasPassword     bool      `json:"hasPassword"`

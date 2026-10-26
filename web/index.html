@@ -125,10 +125,7 @@
         <label>名称（可选，留空自动生成）</label>
         <input id="accLabel" placeholder="例如 主账号" />
         <div class="form-sec" id="secPwFields">
-          <div class="grid2">
-            <div><label>API 域名（留空即可）</label><input id="accOrigin" placeholder="留空自动识别；只有连接其他 Xboard 面板时才需要填" /></div>
-            <div><label>邮箱</label><input id="accEmail" type="email" autocomplete="username" /></div>
-          </div>
+          <label>邮箱</label><input id="accEmail" type="email" autocomplete="username" />
           <label>密码</label><input id="accPassword" type="password" autocomplete="off" placeholder="必填" />
           <div class="pw-state-note hidden" id="pwNote">已保存的密码不会回填，留空表示保持不变。</div>
         </div>
@@ -147,27 +144,39 @@
     </section>
 
     <section id="sec-tool" class="sec">
-      <div class="sec-head"><div><h2>解密工具</h2><p>粘贴 https 订阅链接或 base64 内容，或从本机客户端读取。加密订阅会自动识别。</p></div></div>
+      <div class="sec-head"><div><h2>解密工具</h2><p>粘贴 https 订阅链接或 base64 内容，加密订阅会自动识别。</p></div></div>
       <div class="card">
         <div class="label">订阅链接</div>
         <textarea id="toolInput" rows="2" wrap="off" class="tool-input" spellcheck="false" placeholder="https://…/subscribe?token=… 或 …/v2/feed/download?access_key=… 或 /sub?b64=…"></textarea>
-        <div class="row"><button id="btnToolLocal" class="ghost">读取本机客户端订阅</button><button id="btnToolRun" class="primary">解密</button></div>
+        <div class="row"><button id="btnToolRun" class="primary">解密</button></div>
         <div id="toolHint" class="hint"></div>
       </div>
       <div id="toolResult" class="card hidden">
-        <div class="yaml-head">
-          <div class="label">转换后的 YAML</div>
-          <span id="toolMeta" class="muted tool-meta"></span>
-          <button id="btnToolCopy" class="sm">复制 YAML</button>
+        <div class="tool-bar">
+          <div class="label">解密结果</div>
+          <div class="type-switch" role="tablist" id="toolLayout">
+            <button data-layout="v" class="on" type="button">上下</button>
+            <button data-layout="h" type="button">左右</button>
+          </div>
         </div>
-        <textarea id="toolYaml" rows="22" wrap="off" readonly spellcheck="false" class="tool-yaml"></textarea>
-
-        <div class="yaml-head raw-head">
-          <div class="label">原始订阅</div>
-          <span id="rawMeta" class="muted tool-meta"></span>
-          <button id="btnRawCopy" class="sm">复制原始</button>
+        <div class="tool-panes">
+          <div class="tool-pane">
+            <div class="yaml-head">
+              <div class="label">转换后的 YAML</div>
+              <span id="toolMeta" class="muted tool-meta"></span>
+              <button id="btnToolCopy" class="sm">复制 YAML</button>
+            </div>
+            <textarea id="toolYaml" rows="22" wrap="off" readonly spellcheck="false" class="tool-yaml"></textarea>
+          </div>
+          <div class="tool-pane">
+            <div class="yaml-head raw-head">
+              <div class="label">原始订阅</div>
+              <span id="rawMeta" class="muted tool-meta"></span>
+              <button id="btnRawCopy" class="sm">复制原始</button>
+            </div>
+            <textarea id="rawYaml" rows="16" wrap="off" readonly spellcheck="false" class="tool-yaml raw-yaml"></textarea>
+          </div>
         </div>
-        <textarea id="rawYaml" rows="16" wrap="off" readonly spellcheck="false" class="tool-yaml raw-yaml"></textarea>
       </div>
     </section>
 

@@ -23,7 +23,7 @@ func TestLegacyMigrationAndSubKeys(t *testing.T) {
 			"password": "plain:secret", "subscriptionUrl": "https://example.com/old",
 			"lastLogin": 1, "lastFetch": 2,
 		}},
-		"subKeys": map[string]string{"local": "localkey", "account:acc_test": "accountkey"},
+		"subKeys": map[string]string{"account:acc_test": "accountkey"},
 	}
 	raw, _ := json.Marshal(legacy)
 	if err := os.WriteFile(filepath.Join(run, "accounts.json"), raw, 0o644); err != nil {
@@ -65,10 +65,55 @@ func TestLegacyMigrationAndSubKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys, _ := st.SubKeys()
-	if keys["local"] == "" || keys["manual"] == "" {
+	if keys["manual"] == "" || keys["account:acc_test"] == "" {
 		t.Fatalf("missing generated keys: %v", keys)
 	}
-	if _, err := st.RotateSubKey("local"); err != nil {
+	if _, err := st.RotateSubKey("manual"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenMovesRetiredLocalSource(t *testing.T) {
+	root := t.TempDir()
+	st, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAccount(model.Account{ID: "acc_first", Kind: model.KindPassword, Email: "a@b.c", PasswordEnc: "plain:x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetActiveSource("local"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reopened.ActiveSource(); got != "account:acc_first" {
+		t.Fatalf("active = %q", got)
+	}
+}
+
+func TestOpenMovesRetiredLocalSourceToManual(t *testing.T) {
+	root := t.TempDir()
+	st, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetActiveSource("local"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reopened.ActiveSource(); got != "manual" {
+		t.Fatalf("active = %q", got)
 	}
 }

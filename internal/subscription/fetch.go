@@ -20,7 +20,6 @@ const MaxProfileBytes = 4 * 1024 * 1024
 
 const (
 	SubscriptionUA = "securitynet/v3.1.8 clash-verge Platform/windows"
-	APIUA          = "NetFlow/v3.1.8 clash-verge Platform/windows"
 )
 
 type Fetcher struct {

@@ -1,0 +1,3 @@
+# The Clash template is string-matched on "\n" by ApplyTemplate, so keep it LF
+# in the working tree even when core.autocrlf rewrites everything else.
+internal/subscription/template.yaml text eol=lf

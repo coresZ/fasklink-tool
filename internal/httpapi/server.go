@@ -48,7 +48,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/source", s.auth(s.source))
 	mux.HandleFunc("POST /api/v1/refresh", s.auth(s.refresh))
 	mux.HandleFunc("POST /api/v1/sub-key", s.auth(s.subKey))
-	mux.HandleFunc("GET /api/v1/local-sub", s.auth(s.localSub))
 	mux.HandleFunc("POST /api/v1/decrypt", s.auth(s.decrypt))
 	mux.HandleFunc("POST /api/v1/account", s.auth(s.tempAccount))
 	mux.HandleFunc("GET /api/v1/config", s.auth(s.configGet))
@@ -265,7 +264,6 @@ func (s *Server) accountsPost(w http.ResponseWriter, r *http.Request) {
 		ID:              text("id"),
 		Kind:            text("kind"),
 		Label:           text("label"),
-		APIOrigin:       text("apiOrigin"),
 		Email:           text("email"),
 		Password:        text("password"),
 		SubscriptionURL: text("subscriptionUrl"),
@@ -378,15 +376,6 @@ func (s *Server) subKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) localSub(w http.ResponseWriter, _ *http.Request) {
-	raw, err := s.Service.LocalSubscriptionURL()
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": raw})
-}
-
 func (s *Server) decrypt(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Input string `json:"input"`
@@ -440,15 +429,14 @@ func apexJSON(header *subscription.ApexHeader) map[string]any {
 
 func (s *Server) tempAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		APIOrigin string `json:"apiOrigin"`
-		Email     string `json:"email"`
-		Password  string `json:"password"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	account := model.Account{Label: body.Email, APIOrigin: body.APIOrigin, Email: body.Email, PasswordEnc: "plain:" + body.Password, HasPassword: body.Password != ""}
+	account := model.Account{Label: body.Email, Email: body.Email, PasswordEnc: "plain:" + body.Password, HasPassword: body.Password != ""}
 	result, err := s.Service.LoginAccount(context.Background(), account)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
