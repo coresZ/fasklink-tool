@@ -562,7 +562,7 @@ API 全链路（PowerShell，9 项）—— 全部 PASS
   go test ./... / go vet / gofmt / node --check 通过
 ```
 
-**过程记录**：验证脚本的清理条件误用了 `example.com` 匹配，把我自己建的测试链接账号（label 自动取自 URL 主机名 `update.glados-config.com`）当成了残留。已核实原账号 `demo` 未受影响，并单独删除该测试账号。
+**过程记录**：验证脚本的清理条件误用了 `example.com` 匹配，把我自己建的测试链接账号（label 自动取自 URL 主机名 `update.glados-config.com`）当成了残留。已核实原账号 未受影响，并单独删除该测试账号。
 
 ## 2026-10-22（第 3 轮）
 
