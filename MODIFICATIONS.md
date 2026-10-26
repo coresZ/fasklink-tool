@@ -1188,6 +1188,29 @@ CI（tag 推送触发的构建）                    build success / release suc
 
 **遗留**：GitHub 上被替换下去的旧提交仍能按 SHA 直接访问（不可达但未 GC），要彻底消失得让 GitHub 侧回收。
 
+### docs、全仓历史 — 局域网 IP、来源 key、账号尾号一并占位
+
+**功能**：上一轮清掉邮箱后，仓库里还剩内网地址、面板来源 key、账号尾号三类实际值，一并换成占位符并再次重写历史。
+
+**修改内容**：
+
+- 局域网地址 → `192.168.1.10`（`MODIFICATIONS.md`、`docs/ARCHITECTURE.md`、`extract_test.go`、`policy_test.go`）。
+- 面板来源 key → `abc`（`sub?key=…` 两处，其中一处原本还是截断形态）。
+- 账号尾号 → `demo`（正文、用例记录与 `Content-Disposition` 示例）。
+- 同一套替换再走一次 `filter-branch --tree-filter`，tag 继续 `--tag-name-filter cat`，随后强推 master、`feat/apex-speed-client` 与三个 tag。
+
+**涉及文件**：`MODIFICATIONS.md`、`docs/ARCHITECTURE.md`、`internal/httpapi/extract_test.go`、`internal/subscription/policy_test.go`（内容 + 全部历史对象）。
+
+**验证基线**：
+
+```text
+新历史（master + 三 tag + 特性分支，11 个提交）
+  旧 IP 0 命中 / 旧 key 0 命中 / 旧尾号 0 命中
+远端 master 原始文件：旧 IP 无、192.168.1.10 在、旧 key 无、旧尾号无
+```
+
+**未动**：`flesa.apiv2.a047.com`、`b.xlovehuawei.com` 等机场域名，以及 `giffcores@gmail.com`（第三方面板示例）。
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
