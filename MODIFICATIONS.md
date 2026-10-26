@@ -1165,6 +1165,29 @@ refresh                                      200，74 节点
 刷新          容器仍带 layout-h，「左右」保持选中，localStorage=fl.toollayout=h
 ```
 
+### docs、全仓历史 — 真实邮箱替换为占位符
+
+**功能**：仓库公开，`MODIFICATIONS.md` 里留有两处真实邮箱（一处是 API 报错示例里的个人地址，一处是账号卡示例里的登录邮箱）。换成占位符，并连历史一起洗掉。
+
+**修改内容**：
+
+- 报错示例里的个人地址 → `user@example.com`。
+- 账号邮箱 → `demo@example.com`（账号卡示例）。
+- 用 `git filter-branch --tree-filter` 对全部历史施加同一替换，`--tag-name-filter cat` 顺带重写 `v1.1.1` / `v1.2.0` / `v1.2.1` 三个 tag，随后强制推送 master、`feat/apex-speed-client` 与全部 tag。
+
+**涉及文件**：`MODIFICATIONS.md`（工作区内容 + 全部历史对象）、三个 tag 对象。
+
+**验证基线**：
+
+```text
+git grep xiangdemo <重写后全部提交>        无命中
+raw.githubusercontent master / v1.2.1     MODIFICATIONS.md 均无旧邮箱，占位符在位
+远端 refs                                 master=117040a，tag 均指向重写后提交
+CI（tag 推送触发的构建）                    build success / release success
+```
+
+**遗留**：GitHub 上被替换下去的旧提交仍能按 SHA 直接访问（不可达但未 GC），要彻底消失得让 GitHub 侧回收。
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
