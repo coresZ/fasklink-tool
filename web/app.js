@@ -224,6 +224,7 @@ function renderState() {
   renderSources();
   renderAddresses();
   renderNodes();
+  syncKeyField();
   const err = state.probeError || "";
   // Service reachability outranks subscription state: if the last poll failed,
   // the panel is stale and saying "服务正常" would be a lie.
@@ -484,7 +485,18 @@ function editingLabel() {
   return acc.label || acc.email || acc.id;
 }
 
-function enterEditMode(acc) {
+// 密码显隐：只切 input.type，不重建节点，避免光标与已输入内容丢失。
+function setPwVisible(on) {
+  $("accPassword").type = on ? "text" : "password";
+  const btn = $("btnPwEye");
+  btn.classList.toggle("revealed", on);
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.setAttribute("aria-label", on ? "隐藏密码" : "显示密码");
+  btn.title = on ? "隐藏密码" : "显示密码";
+}
+$("btnPwEye").onclick = () => setPwVisible($("accPassword").type === "password");
+
+async function enterEditMode(acc) {
   editingId = acc.id;
   formType = acc.kind === "link" ? "link" : "pw";
   $("formTitle").textContent = "编辑账号";
@@ -498,12 +510,26 @@ function enterEditMode(acc) {
   $("verifyNote").classList.toggle("hidden", formType !== "pw");
   setText($("typeNote"), formType === "pw" ? "填写邮箱和密码即可，面板地址会自动识别。" : "只需要一条订阅链接，直接拉取，无密码。Apex / Speed 的 access_key 链接同样支持。");
   $("accLabel").value = acc.label || "";
+  $("accSubKey").value = (accounts.subKeys || {})["account:" + acc.id] || "";
   $("accEmail").value = acc.email || "";
   $("accPassword").value = "";
-  $("accPassword").placeholder = "留空则不修改";
+  $("accPassword").placeholder = acc.hasPassword ? "加载中…" : "必填";
+  setPwVisible(false);
   $("accSubUrl").value = acc.subscriptionUrl || "";
   $("pwNote").classList.remove("hidden");
   setHint("accFormHint", "正在编辑：" + (acc.label || acc.email || acc.id) + (formType === "pw" ? "（密码账号）" : "（链接账号）"), true);
+  // 密码按需取，不放进账号列表（列表每个轮询都会被拉一次）。
+  if (!acc.hasPassword) return;
+  try {
+    const data = await api("/api/v1/account/password", { method: "POST", body: { id: acc.id } });
+    if (editingId !== acc.id) return;
+    $("accPassword").value = data.password || "";
+    $("accPassword").placeholder = "必填";
+  } catch (err) {
+    if (editingId !== acc.id) return;
+    $("accPassword").placeholder = "无法回填，请重新输入";
+    setHint("accFormHint", err.message);
+  }
 }
 
 function exitEditMode() {
@@ -512,8 +538,9 @@ function exitEditMode() {
   $("btnAccSave").textContent = "保存账号";
   $("btnCancelEdit").classList.add("hidden");
   $("accPassword").placeholder = "必填";
+  setPwVisible(false);
   $("pwNote").classList.add("hidden");
-  for (const id of ["accLabel", "accEmail", "accPassword", "accSubUrl"]) $(id).value = "";
+  for (const id of ["accLabel", "accSubKey", "accEmail", "accPassword", "accSubUrl"]) $(id).value = "";
   setHint("accFormHint", "");
   setFormType(formType);
 }
@@ -539,6 +566,8 @@ async function saveAccount() {
   const isPw = formType === "pw";
   const payload = { kind: isPw ? "password" : "link" };
   payload.label = $("accLabel").value.trim();
+  // 订阅密钥留空 = 自动生成（新建）或保持原值（编辑），不会在保存时被清掉。
+  payload.subKey = $("accSubKey").value.trim();
   if (editingId) payload.id = editingId;
   if (isPw) {
     payload.email = $("accEmail").value.trim();
@@ -746,12 +775,54 @@ for (const btn of document.querySelectorAll("[data-sec]")) {
 }
 
 $("btnRefresh").onclick = refreshCurrent;
-$("btnResetKey").onclick = async () => {
-  if (!confirm("重置当前来源的订阅链接？旧二维码和旧链接会立即失效。")) return;
+
+// 订阅密钥：默认折叠。值来自 state.source.key，只有「保存密钥」/「随机生成」
+// 会改变它；页面轮询与切换来源都不会动它。
+function keyRowOpen() {
+  return !$("keyRow").classList.contains("gone");
+}
+
+function syncKeyField() {
+  if (!keyRowOpen() || document.activeElement === $("sourceKey")) return;
+  const key = (state && state.source && state.source.key) || "";
+  if ($("sourceKey").value !== key) $("sourceKey").value = key;
+}
+
+$("btnEditKey").onclick = () => {
+  if (keyRowOpen()) { $("keyRow").classList.add("gone"); return; }
+  $("keyRow").classList.remove("gone");
+  $("sourceKey").value = (state && state.source && state.source.key) || "";
+  $("sourceKey").focus();
+  $("sourceKey").select();
+};
+
+async function saveSubKey() {
+  const key = $("sourceKey").value.trim();
+  if (!key) return setHint("sourceHint", "请填写订阅密钥");
   try {
-    await api("/api/v1/sub-key", { method: "POST", body: { source: state.source.active } });
+    const data = await api("/api/v1/sub-key", { method: "POST", body: { source: state.source.active, key } });
     await refresh();
-    setHint("sourceHint", "链接已重置，请重新扫码或复制", true);
+    if (data && data.key) $("sourceKey").value = data.key;
+    setHint("sourceHint", "订阅密钥已更新", true);
+  } catch (err) { setHint("sourceHint", err.message); }
+}
+$("btnSaveKey").onclick = saveSubKey;
+$("sourceKey").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); saveSubKey(); }
+});
+$("btnNewKey").onclick = async () => {
+  const ok = await askConfirm({
+    title: "随机生成密钥",
+    body: "将替换当前来源的订阅密钥，旧链接与旧二维码会立即失效。",
+    confirmText: "重新生成",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const data = await api("/api/v1/sub-key", { method: "POST", body: { source: state.source.active } });
+    await refresh();
+    if (data && data.key) $("sourceKey").value = data.key;
+    setHint("sourceHint", "已重新生成密钥，请重新扫码或复制", true);
   } catch (err) { setHint("sourceHint", err.message); }
 };
 $("btnManual").onclick = () => switchSource("manual");

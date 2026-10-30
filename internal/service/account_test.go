@@ -249,6 +249,224 @@ func TestLinkAccountAlias(t *testing.T) {
 	}
 }
 
+// A user-chosen key is validated before anything is written.
+func TestSetSubKeyValidation(t *testing.T) {
+	svc := newTestService(t)
+	if err := svc.Store.SetManualURL("https://manual.example/sub"); err != nil {
+		t.Fatal(err)
+	}
+	panelKey := config.Default().AccessKey
+
+	bad := []struct {
+		name, source, key, want string
+	}{
+		{"empty", "manual", "", "请填写订阅密钥"},
+		{"too short", "manual", "abc12", "6–64"},
+		{"too long", "manual", strings.Repeat("a", 65), "6–64"},
+		{"space", "manual", "abc 123", "6–64"},
+		{"slash", "manual", "abc/123", "6–64"},
+		{"panel key", "manual", panelKey, "面板口令"},
+		{"unknown source", "bogus", "abcdef", "未知的数据源"},
+		{"missing account", "account:acc_nope", "abcdef", "账号不存在"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.SetSubKey(tc.source, tc.key)
+			if err == nil {
+				t.Fatalf("key %q on %q should be rejected", tc.key, tc.source)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+
+	got, err := svc.SetSubKey("manual", "  my-key_01  ")
+	if err != nil {
+		t.Fatalf("valid key rejected: %v", err)
+	}
+	if got != "my-key_01" {
+		t.Errorf("stored key = %q, want the trimmed input", got)
+	}
+	if stored, _ := svc.Store.SubKey("manual"); stored != "my-key_01" {
+		t.Errorf("persisted key = %q", stored)
+	}
+
+	// Two sources cannot share a key: it alone identifies the source on /sub.
+	acc, err := svc.UpsertAccount(AccountInput{Kind: model.KindLink, SubscriptionURL: "https://a.example/sub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetSubKey("account:"+acc.ID, "my-key_01"); err == nil || !strings.Contains(err.Error(), "已被其他来源使用") {
+		t.Fatalf("shared key should be rejected, got %v", err)
+	}
+	// Re-setting a source's own key is allowed.
+	if _, err := svc.SetSubKey("manual", "my-key_01"); err != nil {
+		t.Fatalf("re-setting the same key: %v", err)
+	}
+}
+
+// Keys must survive restarts and account edits; only an explicit set/rotate may
+// change them.
+func TestSubKeyStableAcrossEdits(t *testing.T) {
+	svc := newTestService(t)
+	acc, err := svc.UpsertAccount(AccountInput{Kind: model.KindLink, Label: "机场", SubscriptionURL: "https://a.example/sub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := "account:" + acc.ID
+	before, err := svc.Store.SubKey(source)
+	if err != nil || before == "" {
+		t.Fatalf("account should get a generated key, got %q (%v)", before, err)
+	}
+
+	// Every startup runs EnsureAllSubKeys; it must be a no-op for existing keys.
+	for i := 0; i < 3; i++ {
+		if err := svc.Store.EnsureAllSubKeys(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after, _ := svc.Store.SubKey(source); after != before {
+		t.Errorf("EnsureAllSubKeys changed the key: %q -> %q", before, after)
+	}
+
+	// Editing the account keeps the key.
+	if _, err := svc.UpsertAccount(AccountInput{ID: acc.ID, Kind: model.KindLink, Label: "机场改名", SubscriptionURL: "https://a.example/sub2"}); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := svc.Store.SubKey(source); after != before {
+		t.Errorf("editing the account changed the key: %q -> %q", before, after)
+	}
+
+	// Only an explicit change moves it.
+	if _, err := svc.SetSubKey(source, "my-own-key"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := svc.Store.SubKey(source); after != "my-own-key" {
+		t.Errorf("explicit set did not apply, got %q", after)
+	}
+}
+
+// The account form can carry the key, and leaving it blank must not wipe it.
+func TestUpsertAccountSubKey(t *testing.T) {
+	svc := newTestService(t)
+
+	acc, err := svc.UpsertAccount(AccountInput{Kind: model.KindLink, Label: "A", SubscriptionURL: "https://a.example/sub", SubKey: "chosen01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Store.SubKey("account:" + acc.ID); got != "chosen01" {
+		t.Fatalf("key = %q, want chosen01", got)
+	}
+
+	// An edit without a key leaves the stored one alone.
+	if _, err := svc.UpsertAccount(AccountInput{ID: acc.ID, Kind: model.KindLink, Label: "A", SubscriptionURL: "https://a.example/sub2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Store.SubKey("account:" + acc.ID); got != "chosen01" {
+		t.Errorf("blank SubKey must not change the key, got %q", got)
+	}
+
+	// An edit with a key replaces it.
+	if _, err := svc.UpsertAccount(AccountInput{ID: acc.ID, Kind: model.KindLink, Label: "A", SubscriptionURL: "https://a.example/sub2", SubKey: "chosen02"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Store.SubKey("account:" + acc.ID); got != "chosen02" {
+		t.Errorf("key = %q, want chosen02", got)
+	}
+
+	// An invalid key rejects the whole save, leaving the account untouched.
+	_, err = svc.UpsertAccount(AccountInput{ID: acc.ID, Kind: model.KindLink, Label: "改名了", SubscriptionURL: "https://a.example/sub3", SubKey: "bad key"})
+	if err == nil {
+		t.Fatal("invalid key should reject the save")
+	}
+	if reloaded, _ := svc.Store.Account(acc.ID); reloaded == nil || reloaded.Label != "A" {
+		t.Error("rejected save must not touch the account row")
+	}
+
+	// A key owned by another source rejects creation outright.
+	if _, err := svc.UpsertAccount(AccountInput{Kind: model.KindLink, Label: "B", SubscriptionURL: "https://b.example/sub", SubKey: "chosen02"}); err == nil || !strings.Contains(err.Error(), "已被其他来源使用") {
+		t.Fatalf("duplicate key should be rejected, got %v", err)
+	}
+	if all, _ := svc.Store.Accounts(); len(all) != 1 {
+		t.Errorf("rejected create left %d accounts, want 1", len(all))
+	}
+}
+
+// Editing with the password untouched must not count as a change: the edit form
+// now prefills it, so a plain rename would otherwise wipe the token and cache.
+func TestSamePasswordEditKeepsRuntime(t *testing.T) {
+	svc := newTestService(t)
+	acc, err := svc.UpsertAccount(AccountInput{Kind: model.KindPassword, Email: "a@b.c", Password: "same-pass"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Store.UpsertAccount(model.Account{
+		Kind: model.KindPassword, ID: acc.ID, Label: acc.Label, Email: acc.Email,
+		PasswordEnc: acc.PasswordEnc, SubscriptionURL: "https://panel.example/sub?token=old", LastLogin: 111,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Store.PutCache(model.Snapshot{
+		Source: "account:" + acc.ID, URL: "https://panel.example/sub?token=old",
+		Label: acc.Label, FetchedAt: 111, YAML: "proxies:\n  - name: x\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	kept, err := svc.UpsertAccount(AccountInput{ID: acc.ID, Kind: model.KindPassword, Email: "a@b.c", Label: "改名", Password: "same-pass"})
+	if err != nil {
+		t.Fatalf("edit with the same password: %v", err)
+	}
+	if kept.SubscriptionURL == "" {
+		t.Error("resending the stored password must keep the subscription URL")
+	}
+	if cached, _ := svc.Store.Cache("account:" + acc.ID); cached == nil {
+		t.Error("resending the stored password must keep the cache")
+	}
+	if plain, err := svc.AccountPassword(acc.ID); err != nil || plain != "same-pass" {
+		t.Errorf("password = %q (%v), want same-pass", plain, err)
+	}
+
+	// A genuinely different password still invalidates the runtime state.
+	changed, err := svc.UpsertAccount(AccountInput{ID: acc.ID, Kind: model.KindPassword, Email: "a@b.c", Password: "other-pass"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.SubscriptionURL != "" {
+		t.Error("a real password change must clear the subscription URL")
+	}
+	if cached, _ := svc.Store.Cache("account:" + acc.ID); cached != nil {
+		t.Error("a real password change must drop the cache")
+	}
+}
+
+// AccountPassword feeds the edit form's prefill.
+func TestAccountPassword(t *testing.T) {
+	svc := newTestService(t)
+	acc, err := svc.UpsertAccount(AccountInput{Kind: model.KindPassword, Email: "a@b.c", Password: "汇报口令"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.AccountPassword(acc.ID); err != nil || got != "汇报口令" {
+		t.Errorf("password = %q (%v), want the stored one", got, err)
+	}
+	if _, err := svc.AccountPassword("acc_missing"); err == nil || !strings.Contains(err.Error(), "账号不存在") {
+		t.Errorf("missing account error = %v", err)
+	}
+	link, err := svc.UpsertAccount(AccountInput{Kind: model.KindLink, SubscriptionURL: "https://a.example/sub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AccountPassword(link.ID); err == nil || !strings.Contains(err.Error(), "没有保存密码") {
+		t.Errorf("link account error = %v", err)
+	}
+	// A wrong id must not leak whether the id shape is valid.
+	if _, err := svc.AccountPassword(""); err == nil {
+		t.Error("empty id should fail")
+	}
+}
+
 // Activating an account makes it the active source.
 func TestActivateAccount(t *testing.T) {
 	svc := newTestService(t)

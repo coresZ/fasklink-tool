@@ -100,6 +100,9 @@ type AccountInput struct {
 	Email           string
 	Password        string
 	SubscriptionURL string
+	// SubKey is optional: when empty the account keeps its current key (or gets
+	// a generated one on creation), so keys never change behind the user's back.
+	SubKey string
 }
 
 func New(root string, cfg config.Config, st *store.Store) *Service {
@@ -607,11 +610,13 @@ func (s *Service) PublicAccounts() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	subKeys, _ := s.Store.SubKeys()
 	return map[string]any{
 		"active":      active,
 		"manualUrl":   s.Store.ManualURL(),
 		"manualLabel": s.Store.ManualLabel(),
 		"accounts":    accounts,
+		"subKeys":     subKeys,
 	}, nil
 }
 
@@ -625,6 +630,12 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 	}
 	email := strings.TrimSpace(input.Email)
 	subURL := strings.TrimSpace(input.SubscriptionURL)
+	subKey := strings.TrimSpace(input.SubKey)
+	if subKey != "" {
+		if err := s.validateSubKey(subKey); err != nil {
+			return nil, err
+		}
+	}
 
 	// Per-kind required fields. Editing a password account may omit the password
 	// (blank means "keep the current one"), but a brand-new one must supply it.
@@ -683,6 +694,17 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 	if kind == model.KindPassword && existing == nil && input.Password == "" {
 		return nil, errors.New("新账号必须填写密码")
 	}
+	// Check key ownership before writing anything: a rejected key must not leave
+	// a half-updated account behind.
+	if subKey != "" {
+		owner, err := s.Store.SubKeyOwner(subKey)
+		if err != nil {
+			return nil, err
+		}
+		if owner != "" && owner != "account:"+id {
+			return nil, errors.New("该订阅密钥已被其他来源使用")
+		}
+	}
 
 	passwordEnc := ""
 	lastLogin, lastFetch := int64(0), int64(0)
@@ -697,11 +719,25 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 		subscriptionURL = existing.SubscriptionURL
 	}
 	if kind == model.KindPassword && input.Password != "" {
-		passwordEnc, err = s.Protector.Encrypt(input.Password)
-		if err != nil {
-			return nil, err
+		// Comparing against the stored plaintext matters now that the edit form
+		// prefills the password: saving the form unchanged must not look like a
+		// password change, or every edit would throw away the token and cache.
+		if existing != nil {
+			if current, decErr := s.Protector.Decrypt(existing.PasswordEnc); decErr == nil && current == input.Password {
+				passwordEnc = existing.PasswordEnc
+			} else {
+				passwordEnc, err = s.Protector.Encrypt(input.Password)
+				if err != nil {
+					return nil, err
+				}
+				passwordChanged = true
+			}
+		} else {
+			passwordEnc, err = s.Protector.Encrypt(input.Password)
+			if err != nil {
+				return nil, err
+			}
 		}
-		passwordChanged = existing != nil && input.Password != ""
 	}
 	if kind == model.KindLink {
 		// A link account keeps the URL the user typed; clearing credentials makes
@@ -743,7 +779,16 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 		account.LastLogin, account.LastFetch = 0, 0
 		account.UserInfo = nil
 	}
-	_, _ = s.Store.EnsureSubKey("account:" + id)
+	if _, err := s.Store.EnsureSubKey("account:" + id); err != nil {
+		return nil, err
+	}
+	// A supplied key wins over the generated one; an empty one leaves whatever is
+	// already stored untouched so the subscription URL stays valid.
+	if subKey != "" {
+		if err := s.Store.SetSubKey("account:"+id, subKey); err != nil {
+			return nil, err
+		}
+	}
 	return &account, nil
 }
 
@@ -807,6 +852,27 @@ func (s *Service) DeleteAccount(id string) error {
 		return err
 	}
 	return nil
+}
+
+// AccountPassword decrypts the stored password so the edit form can prefill it
+// instead of asking the user to retype it. It is only reachable behind panel
+// auth and is never part of the accounts list payload.
+func (s *Service) AccountPassword(id string) (string, error) {
+	account, err := s.Store.Account(strings.TrimSpace(id))
+	if err != nil {
+		return "", err
+	}
+	if account == nil {
+		return "", errors.New("账号不存在")
+	}
+	if account.PasswordEnc == "" {
+		return "", errors.New("该账号没有保存密码")
+	}
+	plain, err := s.Protector.Decrypt(account.PasswordEnc)
+	if err != nil {
+		return "", errors.New("密码无法解密（可能来自其他机器）")
+	}
+	return plain, nil
 }
 
 func (s *Service) SetSource(sourceName, manualURL string) error {
@@ -951,7 +1017,75 @@ func withVariant(raw, v string) string {
 	return u.String()
 }
 
+// subKeyPattern is the shape accepted for a user-chosen subscription key. It is
+// deliberately narrower than a random key: the key travels in URLs, QR codes and
+// client configs, so no spaces, quotes or shell metacharacters.
+var subKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,64}$`)
+
+// validateSubKey checks a key typed by the user (never a generated one).
+func (s *Service) validateSubKey(key string) error {
+	if key == "" {
+		return errors.New("请填写订阅密钥")
+	}
+	if !subKeyPattern.MatchString(key) {
+		return errors.New("订阅密钥只能用字母、数字、- 和 _，长度 6–64 位")
+	}
+	if s.Config.AccessKey != "" && key == s.Config.AccessKey {
+		return errors.New("订阅密钥不能与面板口令相同")
+	}
+	return nil
+}
+
+// validSource rejects a source name that does not resolve to an existing source,
+// so a typo cannot create an orphan sub_keys row.
+func (s *Service) validSource(sourceName string) error {
+	switch {
+	case sourceName == "manual":
+		return nil
+	case strings.HasPrefix(sourceName, "account:"):
+		account, err := s.Store.Account(strings.TrimPrefix(sourceName, "account:"))
+		if err != nil {
+			return err
+		}
+		if account == nil {
+			return errors.New("账号不存在")
+		}
+		return nil
+	}
+	return errors.New("未知的数据源")
+}
+
+// SetSubKey stores a user-chosen key for one source. The key is stable until the
+// user changes it again; nothing else in the app rewrites it.
+func (s *Service) SetSubKey(sourceName, key string) (string, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		sourceName = s.Store.ActiveSource()
+	}
+	if err := s.validSource(sourceName); err != nil {
+		return "", err
+	}
+	key = strings.TrimSpace(key)
+	if err := s.validateSubKey(key); err != nil {
+		return "", err
+	}
+	if err := s.Store.SetSubKey(sourceName, key); err != nil {
+		if errors.Is(err, store.ErrSubKeyInUse) {
+			return "", errors.New("该订阅密钥已被其他来源使用")
+		}
+		return "", err
+	}
+	return key, nil
+}
+
 func (s *Service) RotateSubKey(sourceName string) (string, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		sourceName = s.Store.ActiveSource()
+	}
+	if err := s.validSource(sourceName); err != nil {
+		return "", err
+	}
 	return s.Store.RotateSubKey(sourceName)
 }
 

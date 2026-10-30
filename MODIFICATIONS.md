@@ -1211,9 +1211,123 @@ CI（tag 推送触发的构建）                    build success / release suc
 
 **未动**：`flesa.apiv2.a047.com`、`b.xlovehuawei.com` 等机场域名，以及 `giffcores@gmail.com`（第三方面板示例）。
 
+## 2026-10-30
+
+### 订阅密钥 — 稳定不自动变，可自定义（含账号表单）
+
+**功能**：每个来源（`manual` / `account:<id>`）的订阅 key 一旦存在就不再自行变化；用户可以在新增/编辑账号时直接填，也能在订阅页单独改。原来的「重置链接」只能换成随机值，且账号表单没有入口。
+
+**修改内容**：
+
+- `internal/store/store.go`：新增 `SetSubKey(source,key)`（upsert，写入前用 `SubKeyOwner` 查重，被其他来源占用的 key 返回 `ErrSubKeyInUse`）。`EnsureSubKey` / `EnsureAllSubKeys` 语义不变 —— 只在缺失时生成，绝不覆盖已有 key。
+- `internal/service/service.go`：
+  - `AccountInput` 新增 `SubKey`。`UpsertAccount` 在写库**之前**校验 key 形状与归属，非法 key 不会留下半更新的账号；`SubKey` 留空则完全不动已存的 key（新建时仍自动生成）。
+  - 新增 `SetSubKey(source,key)`：来源存在性校验（`validSource`）、`^[A-Za-z0-9_-]{6,64}$`、不得等于面板口令、不得与其他来源重复。
+  - `RotateSubKey` 增加来源校验，避免拼错名称写出孤儿行。
+  - `PublicAccounts()` 增加 `subKeys`（来源 → key），供编辑账号时回填。
+- `internal/httpapi/server.go`：
+  - `POST /api/v1/sub-key` 接收 `{source,key}`：`key` 非空 → `SetSubKey`；为空 → 仍走随机 `RotateSubKey`（显式动作）。响应增加 `key`。顺带修掉旧实现里对 `manual` 调用 `SetSource(source,"")` 会把 `manualUrl` 清空的问题（改为只做来源校验，不再改当前来源）。
+  - `POST /api/v1/accounts` 透传 `subKey`；`GET /api/v1/state` 的 `source.key` 暴露当前来源的 key（面板已登录，且 key 本就出现在每个订阅地址里，无新增暴露面）。
+- `web/index.html` / `web/style.css` / `web/app.js`：
+  - 订阅页「重置链接」→「修改密钥」，展开 `.gone` 折叠行 `#keyRow`（`#sourceKey` + 保存密钥 + 随机生成），展开时回填 `state.source.key`，收起后卡片高度与提示行位置复原；轮询不会覆盖正在编辑的输入（`syncKeyField` 跳过聚焦中的输入）。
+  - 「随机生成」走 `askConfirm` 二次确认（旧链接/旧二维码失效）；保存与随机都只在点击后生效，加载、轮询、切换来源都不会动 key。
+  - 账号表单新增「订阅密钥（可选，留空自动生成）」，两种账号类型都可见；编辑时回填 `accounts.subKeys["account:<id>"]`，保存时随 `subKey` 提交，取消/保存成功后清空。
+  - 订阅页说明文案改为「保存后不会自动变化；可在账号表单或上方「修改密钥」处自定义」。
+
+**涉及文件**：`internal/store/store.go`、`internal/service/service.go`、`internal/service/account_test.go`、`internal/httpapi/server.go`、`internal/httpapi/subkey_test.go`（新增）、`web/index.html`、`web/style.css`、`web/app.js`、`README.md`、`docs/ARCHITECTURE.md`。
+
+**验证基线**：
+
+```text
+go build ./... / go vet ./...                       通过
+go test ./...（新增 TestSetSubKeyValidation / TestSubKeyStableAcrossEdits /
+  TestUpsertAccountSubKey / TestSubKeyCustomAndRotate / TestAccountsSubKeyRoundTrip）全绿
+gofmt（转 LF 后对 5 个改动文件）                    仅 server.go 缺文件末尾换行，为改动前既有状态
+
+真实服务 + HTTP 层（dev 构建，8899，临时状态目录）
+  设自定义 key            200，响应 key=my-own-key，state.source.key 同步
+  /sub?key=<新 key>       502（源无订阅地址，说明已通过鉴权）
+  /sub?key=<旧 key>       401
+  短 key / 面板口令 / 未知来源   均 400
+  链接账号带 subKey 创建   200，subKeys 中出现 account:<id> = acc-key-01
+  编辑账号不带 subKey      200，key 仍为 acc-key-01（未被覆盖）
+  新建同名 key            400，账号数仍为 1
+  随机生成                 200，key 变化，旧 key 失效
+
+浏览器（Chrome，127.0.0.1:8899，真实登录态；过渡动画在不可见窗口会被节流，
+几何数据为临时禁用 transition 后测得）
+  订阅页 keyRow 收起 0 / 展开 34px；首张卡片 186 → 230 → 186（开/合对称，无残留位移）
+  展开即回填当前 key 并聚焦；保存后 subUrl 含新 key，提示「订阅密钥已更新」
+  账号表单编辑态回填 acc-key-01；非法 key 提交 → 红字「订阅密钥只能用字母、数字、- 和 _，长度 6–64 位」且输入保留
+  合法改 key → 「修改已保存」，服务端 subKeys 变为 acc-key-02
+  新增账号填写 key → 保存成功、表单清空、key 为填写值
+  6 秒（跨一次轮询）后 manual key 不变（stable=true）
+  375 / 768 宽（iframe 视口）：overflowX=0，keyRow 高 34，输入框 139 / 298px，按钮不超出卡片
+  JS 运行时错误：仅一条预期的 400（非法 key 用例），无其他报错
+```
+
+**取舍**：
+
+- 空 key 仍代表「随机生成」，因此 `POST /api/v1/sub-key {source}` 的老行为保持兼容；但 UI 只有「随机生成」按钮才发这个请求。
+- 校验只允许 `[A-Za-z0-9_-]{6,64}`：key 会进 URL、二维码与客户端配置，空格/引号/斜杠一律拒绝。低于 6 位会降低暴力枚举成本。
+- key 与面板口令相同的请求被拒绝，避免两套凭据互相混淆。
+- `sub_keys.key` 是全局唯一约束，两个来源不能共用 key；写入前查重 + UNIQUE 约束双保险（单用户场景，未做事务级串行化）。
+- 账号被删除后其 key 会在下次启动的 `EnsureAllSubKeys` 清理；期间若被其他来源占用，会提示「已被其他来源使用」。
+
+### 账号表单 — 密码回填 + 显隐（含「原样保存」语义）
+
+**功能**：编辑账号时默认回填已保存的密码，输入框右侧提供「小眼睛」切换明文/密文；只是改别名等操作而密码未变时，不再被误判为改密。
+
+**修改内容**：
+
+- 回填走按需接口，不塞进列表：
+  - `internal/service/service.go` 新增 `AccountPassword(id)`：`Account` 存在性校验 → `PasswordEnc` 为空报「该账号没有保存密码」→ `Protector.Decrypt` 失败报「密码无法解密（可能来自其他机器）」。
+  - `internal/httpapi/server.go` 新增 `POST /api/v1/account/password`（`{id}` → `{password}`，挂在 `s.auth` 下），未登录 401，未知/空 id 400。
+  - 明文只在打开编辑态时请求一次；`GET /api/v1/accounts` 仍不含密码，避免每 5 秒轮询把明文密码塞进响应。前端用 `editingId !== acc.id` 丢弃迟到的响应，防止 A→B 快速切换时串号。
+- 「原样保存」不再等于改密：`UpsertAccount` 在收到非空 `password` 时先 `Decrypt(existing.PasswordEnc)` 比对，相同则保留原密文并置 `passwordChanged=false`（保留 `subscriptionUrl` / 缓存 / `lastLogin`），不同才重新加密并清 sqlite 里该账号的运行时状态。此前编辑框留空被当作「不修改」，改成回填后必须补这一层，否则每次保存都会触发重新登录 + 清缓存。
+- `web/index.html` / `web/style.css` / `web/app.js`：
+  - 密码输入包进 `.pwwrap`，右侧 `#btnPwEye`（`.pweye`，内联 SVG 眼睛 + `.eye-slash` 斜杠），`input{padding-right:40px}` 避让；`28×28` 按钮绝对定位垂直居中，不吃输入框高度。
+  - `setPwVisible(on)` 只切 `input.type`，不重建节点（保留输入内容与光标），同步 `aria-pressed` / `aria-label` / `title`（显示密码 ↔ 隐藏密码）；`enterEditMode` / `exitEditMode` 都复位为密文。
+  - `enterEditMode` 改为 async：先置 placeholder「加载中…」，再取密码；失败则 placeholder 改「无法回填，请重新输入」并把错误写进 `#accFormHint`。`#pwNote` 文案改为「已回填当前密码；修改后会重新登录并清空该账号缓存。」
+- 测试：`internal/service/account_test.go` 新增 `TestSamePasswordEditKeepsRuntime`、`TestAccountPassword`；`internal/httpapi/password_test.go`（新增）覆盖列表不含明文、接口 200/401/400、同密码重存保留 `subscription_url`。
+
+**涉及文件**：`internal/service/service.go`（`AccountPassword`、`UpsertAccount` 密码比对分支）、`internal/service/account_test.go`、`internal/httpapi/server.go`（路由 + `accountPassword`）、`internal/httpapi/password_test.go`（新增）、`web/index.html`（`.pwwrap` / `#btnPwEye` / `#pwNote`）、`web/style.css`（`.pwwrap` / `.pweye`）、`web/app.js`（`setPwVisible`、`enterEditMode` async 化、`exitEditMode`）。
+
+**验证基线**：
+
+```text
+go build ./... / go vet ./...                        通过
+go test ./internal/service ./internal/httpapi        全绿（新增 3 个 service 测试 + 1 个 httpapi 测试）
+node --check web/app.js                              rc=0
+
+真实服务 + HTTP 层（dev 构建，8899，临时状态目录）
+  POST /api/v1/accounts（password=p@ss-word）        200
+  GET  /api/v1/accounts 响应体                        不含 "p@ss-word"
+  POST /api/v1/account/password {id}                  200，password=p@ss-word
+  未知 id / 空 id                                     400
+  无 cookie                                          401
+
+浏览器（Chrome，127.0.0.1:8899，真实登录态；过渡动画在不可见窗口被节流）
+  进入编辑态：type=password，value=p@ss-word，placeholder=必填
+  点小眼睛：type=text，aria-label=隐藏密码，aria-pressed=true，按钮加 .revealed
+  再点一次：type=password，aria-label=显示密码
+  几何：inputH=38（未因按钮变高），按钮距输入框右边缘 4px 且完全落在框内，overflowX=0
+  375 宽 iframe：inputW=303，inputH=38，按钮仍在框内，overflowX=0，回填值一致
+  原样保存：提示「修改已保存」，输入值保留 p@ss-word，接口再查仍能解出 p@ss-word
+  取消后再进入编辑：仍回填 p@ss-word，type 复位为 password
+  新增态：value 为空，placeholder=必填
+```
+
+**取舍**：
+
+- 密码明文不进列表接口，只在打开编辑态时取一次；代价是编辑面板会多一次往返（本机毫秒级），换取轮询不重复传明文。
+- 复用 `Protector.Decrypt` 做比对的副作用：旧机器密文（DPAPI 其他用户）解不开时会回填失败并提示重填，此时保存视作改密 —— 与旧行为一致，不做静默兜底。
+- 「相同密码 = 不改」判断依赖解密成功；若将来引入不可逆哈希存储，这层比对需改成存储侧校验，否则每次保存都会清缓存。
+- 小眼睛只做显隐，不额外提供「复制密码」，避免把明文密码放进剪贴板历史。
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
 - `dist/.run/` 保留着旧 Node 版的 `accounts.json` / `cache/*.json`，是 Go 版首次启动自动迁移的数据源，未随旧产物一并清理。
-- 版本号：本次为修复提交，`cmd/fastlink-tool/main.go` 的 `version` 已递增到 `1.2.1`；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
+- 版本号：本次为功能提交，`cmd/fastlink-tool/main.go` 的 `version` 已递增到 `1.2.2`；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
 - `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）曾因 CRLF checkout 失败（`nameserver_test.go:34/56/157: key missing`），已由模板换行归一 + `.gitattributes` 修掉，`build.yml` 的 `-skip` 已移除。

@@ -62,7 +62,7 @@ go run ./cmd/fastlink-tool --dev --root .run-dev --port 8787 --no-open
 - 多账号登录、Cookie / 授权头、订阅获取；
 - Scheme B 解密 + Clash 模板；
 - 本机 / 账号 / 手动来源切换；
-- 每来源独立订阅 key，扫码与链接不串；
+- 每来源独立订阅 key，扫码与链接不串；key 保存后不会自动变化，可在账号表单或订阅页自定义；
 - 刷新失败保留旧快照；
 - DPAPI 密码保存（原生 Windows API，不启动 PowerShell）；
 - SQLite 状态：账号、来源 key、缓存；

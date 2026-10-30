@@ -71,7 +71,12 @@
             <div id="sources" class="chips"></div>
             <div id="sourceMeta" class="muted"></div>
           </div>
-          <button id="btnResetKey" class="ghost sm">重置链接</button>
+          <button id="btnEditKey" class="ghost sm">修改密钥</button>
+        </div>
+        <div id="keyRow" class="row gone">
+          <input id="sourceKey" placeholder="6–64 位字母、数字、- 或 _" spellcheck="false" autocomplete="off" aria-label="订阅密钥" />
+          <button id="btnSaveKey" class="sm">保存密钥</button>
+          <button id="btnNewKey" class="ghost sm">随机生成</button>
         </div>
         <div id="manualRow" class="row gone">
           <input id="manualLabel" placeholder="名称（可选，留空用域名）" />
@@ -97,7 +102,7 @@
               <button id="btnDownload" class="ghost">下载 YAML</button>
             </div>
             <div class="note" id="variantNote">优化后：套用 Clash 模板，策略组与规则已重写。原始：服务商下发的配置，未经修改。</div>
-            <div class="note">各来源订阅 key 相互独立；旧版 <code>?key=面板口令</code> 仍兼容，会跟随当前来源。</div>
+            <div class="note">各来源订阅密钥相互独立，保存后不会自动变化；可在账号表单或上方「修改密钥」处自定义。旧版 <code>?key=面板口令</code> 仍兼容，会跟随当前来源。</div>
           </div>
         </div>
       </div>
@@ -124,10 +129,22 @@
         <div class="note" id="typeNote">填写邮箱和密码即可，面板地址会自动识别。</div>
         <label>名称（可选，留空自动生成）</label>
         <input id="accLabel" placeholder="例如 主账号" />
+        <label>订阅密钥（可选，留空自动生成）</label>
+        <input id="accSubKey" placeholder="6–64 位字母、数字、- 或 _" spellcheck="false" autocomplete="off" />
         <div class="form-sec" id="secPwFields">
           <label>邮箱</label><input id="accEmail" type="email" autocomplete="username" />
-          <label>密码</label><input id="accPassword" type="password" autocomplete="off" placeholder="必填" />
-          <div class="pw-state-note hidden" id="pwNote">已保存的密码不会回填，留空表示保持不变。</div>
+          <label for="accPassword">密码</label>
+          <div class="pwwrap">
+            <input id="accPassword" type="password" autocomplete="off" placeholder="必填" />
+            <button id="btnPwEye" type="button" class="pweye" aria-label="显示密码" aria-pressed="false" title="显示密码">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2 12s3.8-6.2 10-6.2S22 12 22 12s-3.8 6.2-10 6.2S2 12 2 12Z" />
+                <circle cx="12" cy="12" r="3" />
+                <path class="eye-slash" d="M4 4l16 16" />
+              </svg>
+            </button>
+          </div>
+          <div class="pw-state-note hidden" id="pwNote">已回填当前密码；修改后会重新登录并清空该账号缓存。</div>
         </div>
         <div class="form-sec gone" id="secLinkFields">
           <label>订阅链接</label>

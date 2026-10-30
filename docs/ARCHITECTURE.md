@@ -48,7 +48,7 @@ cmd/fastlink-tool
 `fastlink.db` 表：
 
 - `accounts`：账号、`password_enc`、`subscription_url`、last_login/last_fetch、user_info、error
-- `sub_keys`：来源 → 24 位随机 key
+- `sub_keys`：来源 → 订阅 key（默认 24 位随机，创建账号时或之后可自定义）
 - `cache`：来源 → 上次 YAML / userInfo / fetchedAt
 - `settings`：`active`、`manualUrl`
 - `schema_migrations`

@@ -498,6 +498,34 @@ func (s *Store) RotateSubKey(source string) (string, error) {
 	return key, err
 }
 
+// ErrSubKeyInUse reports that another source already owns the key. A key alone
+// identifies the source on /sub, so two sources cannot share one.
+var ErrSubKeyInUse = errors.New("sub key already used by another source")
+
+// SubKeyOwner returns the source that owns key, or "" when nobody does.
+func (s *Store) SubKeyOwner(key string) (string, error) {
+	var source string
+	err := s.db.QueryRow(`SELECT source FROM sub_keys WHERE key = ?`, key).Scan(&source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return source, err
+}
+
+// SetSubKey stores a user-chosen key. It only ever writes when the caller asks,
+// so a source keeps its key across restarts and account edits.
+func (s *Store) SetSubKey(source, key string) error {
+	owner, err := s.SubKeyOwner(key)
+	if err != nil {
+		return err
+	}
+	if owner != "" && owner != source {
+		return ErrSubKeyInUse
+	}
+	_, err = s.db.Exec(`INSERT INTO sub_keys(source,key,created_at) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET key=excluded.key, created_at=excluded.created_at`, source, key, now())
+	return err
+}
+
 func (s *Store) SubKeys() (map[string]string, error) {
 	rows, err := s.db.Query(`SELECT source,key FROM sub_keys`)
 	if err != nil {

@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/sub-key", s.auth(s.subKey))
 	mux.HandleFunc("POST /api/v1/decrypt", s.auth(s.decrypt))
 	mux.HandleFunc("POST /api/v1/account", s.auth(s.tempAccount))
+	mux.HandleFunc("POST /api/v1/account/password", s.auth(s.accountPassword))
 	mux.HandleFunc("GET /api/v1/config", s.auth(s.configGet))
 	mux.HandleFunc("GET /api/v1/net-diag", s.auth(s.netDiag))
 	mux.HandleFunc("POST /api/v1/config", s.auth(s.configPost))
@@ -184,10 +185,12 @@ func (s *Server) logout(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	go func() { _ = s.Service.Refresh(context.Background(), false) }()
 	state := s.Service.State()
+	activeKey, _ := s.Service.Store.SubKey(state.Active)
 	source := map[string]any{
 		"active":    state.Active,
 		"resolved":  state.Active,
 		"label":     state.Label,
+		"key":       activeKey,
 		"fetchedAt": state.FetchedAt,
 		"cached":    state.Cached,
 	}
@@ -267,6 +270,7 @@ func (s *Server) accountsPost(w http.ResponseWriter, r *http.Request) {
 		Email:           text("email"),
 		Password:        text("password"),
 		SubscriptionURL: text("subscriptionUrl"),
+		SubKey:          text("subKey"),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -354,25 +358,35 @@ func firstError(err error, fallback string) string {
 func (s *Server) subKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Source string `json:"source"`
+		Key    string `json:"key"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if body.Source == "" {
-		body.Source = s.Service.Store.ActiveSource()
+	source := body.Source
+	if source == "" {
+		source = s.Service.Store.ActiveSource()
 	}
-	if err := s.Service.SetSource(body.Source, ""); err != nil {
+	var (
+		key string
+		err error
+	)
+	if strings.TrimSpace(body.Key) == "" {
+		// An empty key is the only way to get a generated one: rotation is an
+		// explicit user action, never something refresh or save does on its own.
+		key, err = s.Service.RotateSubKey(source)
+	} else {
+		key, err = s.Service.SetSubKey(source, body.Key)
+	}
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if _, err := s.Service.RotateSubKey(body.Source); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"source":    body.Source,
-		"addresses": s.Service.Addresses(body.Source),
+		"source":    source,
+		"key":       key,
+		"addresses": s.Service.Addresses(source),
 	})
 }
 
@@ -448,6 +462,22 @@ func (s *Server) tempAccount(w http.ResponseWriter, r *http.Request) {
 		"yaml":            result.YAML,
 		"userInfo":        result.UserInfo,
 	})
+}
+
+func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	password, err := s.Service.AccountPassword(body.ID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"password": password})
 }
 
 func (s *Server) configGet(w http.ResponseWriter, _ *http.Request) {
