@@ -260,7 +260,7 @@ func TestSetSubKeyValidation(t *testing.T) {
 	bad := []struct {
 		name, source, key, want string
 	}{
-		{"empty", "manual", "", "请填写订阅密钥"},
+		{"empty", "manual", "", "请填写订阅key"},
 		{"too short", "manual", "abc12", "6–64"},
 		{"too long", "manual", strings.Repeat("a", 65), "6–64"},
 		{"space", "manual", "abc 123", "6–64"},

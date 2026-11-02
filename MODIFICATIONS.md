@@ -1325,9 +1325,85 @@ node --check web/app.js                              rc=0
 - 「相同密码 = 不改」判断依赖解密成功；若将来引入不可逆哈希存储，这层比对需改成存储侧校验，否则每次保存都会清缓存。
 - 小眼睛只做显隐，不额外提供「复制密码」，避免把明文密码放进剪贴板历史。
 
+## 2026-10-31
+
+### web、internal/service、internal/store — 文案「订阅密钥」改「订阅key」+ 保存回显 + 删除激活账号的回落修复
+
+**功能**：用户反馈三件事——①账号表单 key 输入「填了是空的」；②编辑账号时密码和 key 都不回填；③「订阅密钥」改名「订阅key」。排查结论：①②在当前代码上无法复现（HTTP 层 + Playwright 全流程实测均正常），症状与「旧后端二进制 + 新前端页面」的组合完全吻合——dev 模式页面从磁盘实时读取，而 `go run` 不热编译，功能提交（7a3f91a）后不重启的话，新表单填 `subKey` 会被旧接口丢弃、`accounts.subKeys` 不存在、`/api/v1/account/password` 404，恰好等于「填了变空 + 两项都不回填」。重启 dev 后两项均已正常。本次落地的是③的改名，以及排查中带出的两个小修。
+
+**修改内容**：
+
+- 文案统一（用户可见字符串）：「订阅密钥」→「订阅key」，按钮「修改密钥/保存密钥」→「修改key/保存key」，弹窗「随机生成密钥」→「随机生成key」，提示「订阅key已更新 / 已重新生成key / 请填写订阅key」，说明文案同步；后端校验错误「订阅key只能用字母、数字、- 和 _，长度 6–64 位」「订阅key不能与面板口令相同」「该订阅key已被其他来源使用」（`UpsertAccount` 与 `SetSubKey` 两处）。
+- 新建账号保存成功且填了自定义 key 时，提示改为「保存成功，订阅key：<值>」——表单清空是既有设计（2026-10-21 第 4 轮用户要求），回显用于消除「填了就空了」的误会；编辑态保存后表单本就重新回填，不加。
+- `Store.DeleteAccount`：删除「当前激活」账号后的回落由 `'local'` 改为 `'manual'`。`local` 来源已整体移除，旧回落让运行中的服务指向一个无人能解析的来源（UI 来源列表失焦、`Addresses("local")` 还会生成孤儿 `sub_keys` 行），直到下次启动才被 `migrateLocalSource` 纠正。新增 `TestDeleteActiveAccountFallsBackToManual`。
+
+**涉及文件**：`web/index.html`（按钮、aria-label、说明、表单 label）、`web/app.js`（四处提示 + 弹窗、`saveAccount` 新建分支回显）、`internal/service/service.go`（`validateSubKey`、两处「已被其他来源使用」）、`internal/service/account_test.go`（断言同步）、`internal/store/store.go`（`DeleteAccount` 回落）、`internal/store/store_test.go`（新增 1 个用例）。
+
+**验证基线**：
+
+```text
+go test ./...            全绿（含新增 TestDeleteActiveAccountFallsBackToManual）
+node --check web/app.js  通过
+
+Playwright（运行中的 dev 服务 8787，前端磁盘资源即时生效）：
+  按钮 = 修改key / 保存key；说明含「各来源订阅key相互独立」
+  表单 label = 「订阅key（可选，留空自动生成）」
+  新建账号填 key=verify-key-77 保存 → 提示「保存成功，订阅key：verify-key-77」，表单已清空
+  再点编辑 → key 与密码均正确回填
+  清理后 accounts=[]、active=manual、subKeys 仅剩 manual 的原值
+
+排查用 HTTP 层实测（重启后的服务，均正常故未改代码）：
+  建号带 subKey     → subKeys["account:<id>"] = 填写值
+  /account/password → 200 回传明文
+  激活账号来源      → /sub?key=<自定义 key> 200，URL 使用自定义值
+```
+
+**取舍**：后端错误文案要等 dev 重启才生效（`go run` 不热编译），前端改动刷新即生效；孤儿 `local` key 行已在运行库中手工删除（启动时 `EnsureAllSubKeys` 亦会清理同类行）。key 全局唯一是设计而非缺陷：key 本身用于在 `/sub` 上区分来源，两个来源不能共用一个 key，想复用手动链接的 key 会被「该订阅key已被其他来源使用」拒绝。
+
+## 2026-11-02
+
+### internal/service · internal/httpapi — 上游收拢成一个路口，`/sub` 只读缓存
+
+**功能**：此前每次 `GET /sub` 都会 `Resolve → FetchSubscription` 实拉上游（实测 3 次下载 = 3 次上游请求，即使 `cache` 表里刚写过完整快照），账号被判定失效时还会顺带重新登录。现在只有「手动刷新 / 切源 / 账号保存或激活（登录即拉取）/ 该来源完全没有缓存时的自举」会碰上游，下载一律发缓存。
+
+**修改内容**：
+
+- `internal/service/service.go`：
+  - `Refresh` 拆成 `Refresh`（对外唯一入口，保留 `refresh` 去重与 `!force && probe.At > 0` 跳过）与 `refreshSourceLocked(ctx, source)`（真正的上游腿：`resolve → 登录 → 拉取 → PutCache + probe`），失败分支抽成 `recordFailure`，语义与改前一致（保留旧 `probe.YAML`，清账号错误状态）。
+  - 新增 `upstreamMu` 串行化上游腿：并发无缓存下载不会变成「每请求一次登录」。
+  - `refreshSourceLocked` 只在 `Store.ActiveSource() == source` 时写 `probe`，避免给非当前来源做自举时把面板显示的数据顶掉。
+  - 新增 `Snapshot(ctx, source)`（`/sub` 的读路径）：`cachedResult` 命中就直接回缓存；未命中才在 `upstreamMu` 下二次检查并走一次上游腿。`cachedResult` 顺带做 URL 一致性校验（手动链接被改过 / 账号 token 轮换后，旧行视为无缓存）。
+  - `Resolve` / `FetchResolved` 改为不导出的 `resolve` / `fetchResolved`，API 面上不再存在「自己拼一次上游请求」的可能。
+- `internal/httpapi/server.go`：
+  - `sub` 改为 `Snapshot`，`/sub` 不再 `Resolve`/`FetchResolved`；`variant=raw` 与优化后版本继续共用同一份缓存（`RawYAML` 为空的老行回落优化后版本，逻辑不变）。
+  - `accountsPost`：保存后若该账号是当前来源且还没有 `subscription_url`（新账号 / 改过密码），异步 `Refresh(true)` —— 也就是「登录之后立即刷新」，让 `/sub` 立刻有缓存可发。
+- 测试：新增 `internal/httpapi/sub_cache_test.go` —— `TestSubServesStoredSnapshot`（显式刷 1 次后再下载 3 次，上游计数仍为 1，且上游换内容后 `/sub` 仍回旧快照，刷新后才变）、`TestSubBootstrapsOnceWithoutCache`（无缓存时 4 个并发下载只产生 1 次上游请求）、`TestBootstrapOfOtherSourceKeepsProbe`（给非当前来源做自举不覆盖面板 probe）、`TestSubKeepsSnapshotWhenRefreshFails`（刷新失败不清快照）。
+
+**涉及文件**：`internal/service/service.go`（`upstreamMu`、`Refresh`/`refreshSourceLocked`/`recordFailure`/`Snapshot`/`cachedResult`、`resolve`/`fetchResolved` 改名）、`internal/httpapi/server.go`（`sub`、`accountsPost`）、`internal/httpapi/sub_cache_test.go`（新增）、`README.md`（当前能力）、`docs/ARCHITECTURE.md`（订阅流程图）。
+
+**验证基线**：
+
+```text
+go build ./... / go vet ./...                通过
+go test ./...                                全绿（httpapi 3.17s / service 4.30s）
+新增用例
+  TestSubServesStoredSnapshot                 上游命中 1 次 → 3 次下载后仍为 1；换内容后再刷 → 2
+  TestSubBootstrapsOnceWithoutCache           4 并发无缓存下载 → 上游命中 1 次
+  TestSubKeepsSnapshotWhenRefreshFails        刷新失败后 /sub 字节不变
+改前对照（同一套测试桩，只读计数）
+  有 cache 行时 3 次 /sub                     上游命中 1 → 4（即每次下载都实拉）
+```
+
+**取舍**：
+
+- 缓存不设 TTL：客户端按 `Profile-Update-Interval: 12`（小时）拉一次，拿到的是同一份快照，直到面板手动刷新。换机场节点集合需要点一次「刷新」，这是「只有一个路口」的直接代价。
+- `Subscription-Userinfo` 也随之走缓存，客户端看到的流量数字是上次刷新的值；面板顶栏同理（本来 `Refresh(false)` 在 `probe.At > 0` 时也直接返回，行为未变差）。
+- 解密工具（`POST /api/v1/decrypt`、`/sub?url=` / `?b64=`）不受影响：用户粘贴什么就实时拉什么，用 loopback fetcher，不写缓存，也不算来源。
+- 首次部署 / 新增来源时仍会实拉一次（自举），否则新装的 `/sub` 只能 502；自举与手动刷新走同一段代码，不是第二路口。
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
 - `dist/.run/` 保留着旧 Node 版的 `accounts.json` / `cache/*.json`，是 Go 版首次启动自动迁移的数据源，未随旧产物一并清理。
-- 版本号：本次为功能提交，`cmd/fastlink-tool/main.go` 的 `version` 已递增到 `1.2.2`；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
+- 版本号：`cmd/fastlink-tool/main.go` 的 `version` 已递增到 `1.2.3`；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
 - `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）曾因 CRLF checkout 失败（`nameserver_test.go:34/56/157: key missing`），已由模板换行归一 + `.gitattributes` 修掉，`build.yml` 的 `-skip` 已移除。

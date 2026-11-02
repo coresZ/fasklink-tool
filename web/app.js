@@ -593,7 +593,8 @@ async function saveAccount() {
       setHint("accFormHint", "修改已保存", true);
     } else {
       exitEditMode();
-      setHint("accFormHint", "保存成功", true);
+      // 表单按既有设计清空；填了自定义 key 时把它回显出来，避免“填了就空了”的误会。
+      setHint("accFormHint", payload.subKey ? "保存成功，订阅key：" + payload.subKey : "保存成功", true);
     }
   } catch (err) {
     setHint("accFormHint", err.message);
@@ -798,12 +799,12 @@ $("btnEditKey").onclick = () => {
 
 async function saveSubKey() {
   const key = $("sourceKey").value.trim();
-  if (!key) return setHint("sourceHint", "请填写订阅密钥");
+  if (!key) return setHint("sourceHint", "请填写订阅key");
   try {
     const data = await api("/api/v1/sub-key", { method: "POST", body: { source: state.source.active, key } });
     await refresh();
     if (data && data.key) $("sourceKey").value = data.key;
-    setHint("sourceHint", "订阅密钥已更新", true);
+    setHint("sourceHint", "订阅key已更新", true);
   } catch (err) { setHint("sourceHint", err.message); }
 }
 $("btnSaveKey").onclick = saveSubKey;
@@ -812,8 +813,8 @@ $("sourceKey").addEventListener("keydown", (event) => {
 });
 $("btnNewKey").onclick = async () => {
   const ok = await askConfirm({
-    title: "随机生成密钥",
-    body: "将替换当前来源的订阅密钥，旧链接与旧二维码会立即失效。",
+    title: "随机生成key",
+    body: "将替换当前来源的订阅key，旧链接与旧二维码会立即失效。",
     confirmText: "重新生成",
     danger: true,
   });
@@ -822,7 +823,7 @@ $("btnNewKey").onclick = async () => {
     const data = await api("/api/v1/sub-key", { method: "POST", body: { source: state.source.active } });
     await refresh();
     if (data && data.key) $("sourceKey").value = data.key;
-    setHint("sourceHint", "已重新生成密钥，请重新扫码或复制", true);
+    setHint("sourceHint", "已重新生成key，请重新扫码或复制", true);
   } catch (err) { setHint("sourceHint", err.message); }
 };
 $("btnManual").onclick = () => switchSource("manual");

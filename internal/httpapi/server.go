@@ -263,7 +263,7 @@ func (s *Server) accountsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := func(key string) string { v, _ := body[key].(string); return v }
-	_, err := s.Service.UpsertAccount(service.AccountInput{
+	account, err := s.Service.UpsertAccount(service.AccountInput{
 		ID:              text("id"),
 		Kind:            text("kind"),
 		Label:           text("label"),
@@ -275,6 +275,13 @@ func (s *Server) accountsPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
+	}
+	// Saving credentials is also the login trigger: an account with no stored
+	// subscription URL has to log in, and that login downloads the profile. Warm
+	// the snapshot right away so /sub stays cache-served and the panel is not
+	// stale until someone hits refresh.
+	if account != nil && account.SubscriptionURL == "" && s.Service.Store.ActiveSource() == "account:"+account.ID {
+		go func() { _ = s.Service.Refresh(context.Background(), true) }()
 	}
 	value, _ := s.Service.PublicAccounts()
 	writeJSON(w, http.StatusOK, value)
@@ -648,12 +655,10 @@ func (s *Server) sub(w http.ResponseWriter, r *http.Request) {
 		if sourceName == "" {
 			sourceName = s.Service.Store.ActiveSource()
 		}
-		resolved, resolveErr := s.Service.Resolve(r.Context(), sourceName)
-		if resolveErr != nil {
-			err = resolveErr
-		} else {
-			result, err = s.Service.FetchResolved(r.Context(), resolved)
-		}
+		// Cache-first: a download never logs in or re-fetches upstream. The store
+		// is filled by an explicit refresh (or by the login that just happened);
+		// only a source with nothing cached bootstraps through the same funnel.
+		result, err = s.Service.Snapshot(r.Context(), sourceName)
 	}
 	if err != nil {
 		http.Error(w, "decrypt failed: "+err.Error(), http.StatusBadGateway)

@@ -117,3 +117,27 @@ func TestOpenMovesRetiredLocalSourceToManual(t *testing.T) {
 		t.Fatalf("active = %q", got)
 	}
 }
+
+// Deleting the active account must land on an existing source. It used to fall
+// back to the retired "local", leaving the running server with an unresolvable
+// active source (and an orphan sub_keys row) until the next restart.
+func TestDeleteActiveAccountFallsBackToManual(t *testing.T) {
+	root := t.TempDir()
+	st, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.UpsertAccount(model.Account{ID: "acc_only", Kind: model.KindPassword, Email: "a@b.c", PasswordEnc: "plain:x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetActiveSource("account:acc_only"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteAccount("acc_only"); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.ActiveSource(); got != "manual" {
+		t.Fatalf("active = %q, want manual", got)
+	}
+}

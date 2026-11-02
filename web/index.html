@@ -71,11 +71,11 @@
             <div id="sources" class="chips"></div>
             <div id="sourceMeta" class="muted"></div>
           </div>
-          <button id="btnEditKey" class="ghost sm">修改密钥</button>
+          <button id="btnEditKey" class="ghost sm">修改key</button>
         </div>
         <div id="keyRow" class="row gone">
-          <input id="sourceKey" placeholder="6–64 位字母、数字、- 或 _" spellcheck="false" autocomplete="off" aria-label="订阅密钥" />
-          <button id="btnSaveKey" class="sm">保存密钥</button>
+          <input id="sourceKey" placeholder="6–64 位字母、数字、- 或 _" spellcheck="false" autocomplete="off" aria-label="订阅key" />
+          <button id="btnSaveKey" class="sm">保存key</button>
           <button id="btnNewKey" class="ghost sm">随机生成</button>
         </div>
         <div id="manualRow" class="row gone">
@@ -102,7 +102,7 @@
               <button id="btnDownload" class="ghost">下载 YAML</button>
             </div>
             <div class="note" id="variantNote">优化后：套用 Clash 模板，策略组与规则已重写。原始：服务商下发的配置，未经修改。</div>
-            <div class="note">各来源订阅密钥相互独立，保存后不会自动变化；可在账号表单或上方「修改密钥」处自定义。旧版 <code>?key=面板口令</code> 仍兼容，会跟随当前来源。</div>
+            <div class="note">各来源订阅key相互独立，保存后不会自动变化；可在账号表单或上方「修改key」处自定义。旧版 <code>?key=面板口令</code> 仍兼容，会跟随当前来源。</div>
           </div>
         </div>
       </div>
@@ -129,7 +129,7 @@
         <div class="note" id="typeNote">填写邮箱和密码即可，面板地址会自动识别。</div>
         <label>名称（可选，留空自动生成）</label>
         <input id="accLabel" placeholder="例如 主账号" />
-        <label>订阅密钥（可选，留空自动生成）</label>
+        <label>订阅key（可选，留空自动生成）</label>
         <input id="accSubKey" placeholder="6–64 位字母、数字、- 或 _" spellcheck="false" autocomplete="off" />
         <div class="form-sec" id="secPwFields">
           <label>邮箱</label><input id="accEmail" type="email" autocomplete="username" />

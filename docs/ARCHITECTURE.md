@@ -57,17 +57,22 @@ cmd/fastlink-tool
 
 ## 订阅流程
 
+上游只有一个路口（`refreshSourceLocked`），只有显式动作会触发：手动刷新、切源、账号保存 / 激活、以及某个来源根本没有缓存时的自举。
+
 ```text
-active source
+显式动作 -> resolve(active source) -> 拉取 -> 解密/模板 -> cache + probe
   ├─ account -> accounts.subscription_url
-  │            没有 URL -> LoginAccount
+  │            没有 URL -> LoginAccount（登录响应自带配置，登录即缓存）
   └─ manual  -> settings.manualUrl
 
 Resolve -> FetchSubscription (UA, 4MB, HTTPS/SSRF guard)
         -> DecryptProfile (raw / XOR / AES-GCM / obfuscated base64)
         -> ApplyTemplate (proxies block -> template.yaml)
-        -> cache + probe
 ```
+
+`GET /sub?key=…` 走 `Snapshot`：直接读 `cache`（不登录、不拉取），只有该来源无缓存时才回到上面那条路口自举；并发无缓存请求会被 `upstreamMu` 合并成一次上游请求。`variant=raw` 与优化后版本来自同一份缓存。
+
+解密工具（`POST /api/v1/decrypt`、`/sub?url=…`）是另一条独立路径：用户粘贴什么就实时拉什么，用 loopback fetcher，不写缓存，也不影响来源。
 
 账号登录（只有 Apex / Speed v2 一种协议）：
 

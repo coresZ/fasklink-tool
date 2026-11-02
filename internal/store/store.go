@@ -406,7 +406,9 @@ func (s *Store) DeleteAccount(id string) error {
 	var active string
 	_ = tx.QueryRow(`SELECT value FROM settings WHERE key = 'active'`).Scan(&active)
 	if active == "account:"+id {
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO settings(key,value) VALUES('active','local')`); err != nil {
+		// "local" used to be the fallback but that source is retired; falling back
+		// to it left the running server pointing at a source nothing can resolve.
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO settings(key,value) VALUES('active','manual')`); err != nil {
 			return err
 		}
 	}
