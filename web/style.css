@@ -85,6 +85,11 @@ h2{margin:0 0 4px;font-size:20px}.sec-head p{margin:0;color:var(--muted);font-si
   transition:max-height .18s ease,opacity .18s ease,margin-top .18s ease}
 #manualRow.gone{max-height:0;opacity:0;margin-top:0;pointer-events:none}
 #manualRow>input{flex:1;width:auto;min-width:0}
+/* 密钥行沿用同一套折叠节奏，展开/收起不改变卡片高度。 */
+#keyRow{display:flex;gap:8px;align-items:center;margin-top:10px;overflow:hidden;max-height:64px;
+  transition:max-height .18s ease,opacity .18s ease,margin-top .18s ease}
+#keyRow.gone{max-height:0;opacity:0;margin-top:0;pointer-events:none}
+#keyRow>input{flex:1;width:auto;min-width:0;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .chips button,.ghost,.primary,button.sm{border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:9px;padding:8px 12px;cursor:pointer;font:inherit;font-size:12px}
 .chips button.on{border-color:var(--accent);background:rgba(59,130,246,.18);color:#fff}
 .primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -179,6 +184,14 @@ textarea{min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monos
 .form-sec.gone{max-height:0;opacity:0;pointer-events:none;margin-top:0!important}
 .form-sec > label:first-child,.form-sec > *:first-child{margin-top:0}
 .pw-state-note{font-size:11px;color:var(--warn);margin-top:5px;height:16px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 密码框右侧的查看按钮：只做显隐切换，不改变输入框高度。 */
+.pwwrap{position:relative}
+.pwwrap input{padding-right:40px}
+.pweye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:28px;height:28px;display:grid;place-items:center;padding:0;border:0;background:transparent;color:var(--muted);border-radius:7px;cursor:pointer;line-height:0}
+.pweye:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.pweye:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.pweye .eye-slash{display:none}
+.pweye.revealed .eye-slash{display:inline}
 /* 自写确认弹窗：不用原生 confirm。 */
 .modal-mask{position:fixed;inset:0;background:rgba(5,9,20,.66);display:grid;place-items:center;z-index:100;padding:20px;
   animation:maskIn .12s ease-out}

@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/sub-key", s.auth(s.subKey))
 	mux.HandleFunc("POST /api/v1/decrypt", s.auth(s.decrypt))
 	mux.HandleFunc("POST /api/v1/account", s.auth(s.tempAccount))
+	mux.HandleFunc("POST /api/v1/account/password", s.auth(s.accountPassword))
 	mux.HandleFunc("GET /api/v1/config", s.auth(s.configGet))
 	mux.HandleFunc("GET /api/v1/net-diag", s.auth(s.netDiag))
 	mux.HandleFunc("POST /api/v1/config", s.auth(s.configPost))
@@ -184,10 +185,12 @@ func (s *Server) logout(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	go func() { _ = s.Service.Refresh(context.Background(), false) }()
 	state := s.Service.State()
+	activeKey, _ := s.Service.Store.SubKey(state.Active)
 	source := map[string]any{
 		"active":    state.Active,
 		"resolved":  state.Active,
 		"label":     state.Label,
+		"key":       activeKey,
 		"fetchedAt": state.FetchedAt,
 		"cached":    state.Cached,
 	}
@@ -260,17 +263,25 @@ func (s *Server) accountsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := func(key string) string { v, _ := body[key].(string); return v }
-	_, err := s.Service.UpsertAccount(service.AccountInput{
+	account, err := s.Service.UpsertAccount(service.AccountInput{
 		ID:              text("id"),
 		Kind:            text("kind"),
 		Label:           text("label"),
 		Email:           text("email"),
 		Password:        text("password"),
 		SubscriptionURL: text("subscriptionUrl"),
+		SubKey:          text("subKey"),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
+	}
+	// Saving credentials is also the login trigger: an account with no stored
+	// subscription URL has to log in, and that login downloads the profile. Warm
+	// the snapshot right away so /sub stays cache-served and the panel is not
+	// stale until someone hits refresh.
+	if account != nil && account.SubscriptionURL == "" && s.Service.Store.ActiveSource() == "account:"+account.ID {
+		go func() { _ = s.Service.Refresh(context.Background(), true) }()
 	}
 	value, _ := s.Service.PublicAccounts()
 	writeJSON(w, http.StatusOK, value)
@@ -354,25 +365,35 @@ func firstError(err error, fallback string) string {
 func (s *Server) subKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Source string `json:"source"`
+		Key    string `json:"key"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if body.Source == "" {
-		body.Source = s.Service.Store.ActiveSource()
+	source := body.Source
+	if source == "" {
+		source = s.Service.Store.ActiveSource()
 	}
-	if err := s.Service.SetSource(body.Source, ""); err != nil {
+	var (
+		key string
+		err error
+	)
+	if strings.TrimSpace(body.Key) == "" {
+		// An empty key is the only way to get a generated one: rotation is an
+		// explicit user action, never something refresh or save does on its own.
+		key, err = s.Service.RotateSubKey(source)
+	} else {
+		key, err = s.Service.SetSubKey(source, body.Key)
+	}
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if _, err := s.Service.RotateSubKey(body.Source); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"source":    body.Source,
-		"addresses": s.Service.Addresses(body.Source),
+		"source":    source,
+		"key":       key,
+		"addresses": s.Service.Addresses(source),
 	})
 }
 
@@ -448,6 +469,22 @@ func (s *Server) tempAccount(w http.ResponseWriter, r *http.Request) {
 		"yaml":            result.YAML,
 		"userInfo":        result.UserInfo,
 	})
+}
+
+func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	password, err := s.Service.AccountPassword(body.ID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"password": password})
 }
 
 func (s *Server) configGet(w http.ResponseWriter, _ *http.Request) {
@@ -618,12 +655,10 @@ func (s *Server) sub(w http.ResponseWriter, r *http.Request) {
 		if sourceName == "" {
 			sourceName = s.Service.Store.ActiveSource()
 		}
-		resolved, resolveErr := s.Service.Resolve(r.Context(), sourceName)
-		if resolveErr != nil {
-			err = resolveErr
-		} else {
-			result, err = s.Service.FetchResolved(r.Context(), resolved)
-		}
+		// Cache-first: a download never logs in or re-fetches upstream. The store
+		// is filled by an explicit refresh (or by the login that just happened);
+		// only a source with nothing cached bootstraps through the same funnel.
+		result, err = s.Service.Snapshot(r.Context(), sourceName)
 	}
 	if err != nil {
 		http.Error(w, "decrypt failed: "+err.Error(), http.StatusBadGateway)

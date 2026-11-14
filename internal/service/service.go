@@ -36,6 +36,11 @@ type Service struct {
 	probe   Probe
 	refresh bool
 
+	// upstreamMu serialises the one code path that talks to a provider
+	// (refreshSourceLocked), so a burst of cache-miss downloads cannot turn into
+	// a burst of logins.
+	upstreamMu sync.Mutex
+
 	// Apex state. The remote config only carries domain names and path mappings,
 	// so it is cached for a while: refetching it on every refresh added ~900 ms
 	// to each run for data that changes a few times a month.
@@ -100,6 +105,9 @@ type AccountInput struct {
 	Email           string
 	Password        string
 	SubscriptionURL string
+	// SubKey is optional: when empty the account keeps its current key (or gets
+	// a generated one on creation), so keys never change behind the user's back.
+	SubKey string
 }
 
 func New(root string, cfg config.Config, st *store.Store) *Service {
@@ -337,6 +345,14 @@ func (s *Service) ResetProbe() {
 	s.probe = Probe{}
 }
 
+// Refresh is the ONLY path that reaches a provider for a source. It resolves the
+// source (logging in when no token is stored yet — the login response already
+// carries the profile), downloads once, then writes the snapshot so every later
+// reader is served locally.
+//
+// Callers: the manual refresh button, source switches, account activation, and
+// Snapshot's cache-miss bootstrap. Nothing else may fetch upstream; in
+// particular GET /sub never does once a snapshot exists.
 func (s *Service) Refresh(ctx context.Context, force bool) error {
 	s.mu.Lock()
 	if s.refresh {
@@ -351,42 +367,70 @@ func (s *Service) Refresh(ctx context.Context, force bool) error {
 	active := s.Store.ActiveSource()
 	s.mu.Unlock()
 
-	var (
-		yamlText string
-		rawYAML  string
-		userInfo *model.UserInfo
-		finalURL string
-		err      error
-	)
 	defer func() {
 		s.mu.Lock()
 		s.refresh = false
 		s.mu.Unlock()
 	}()
 
-	resolved, resolveErr := s.Resolve(ctx, active)
-	if resolveErr == nil {
-		result, fetchErr := s.FetchResolved(ctx, resolved)
-		if fetchErr == nil {
-			yamlText, userInfo, finalURL = result.YAML, result.UserInfo, result.SubscriptionURL
-			rawYAML = result.RawYAML
-		} else {
-			err = fetchErr
-		}
-	} else {
-		err = resolveErr
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
+	_, err := s.refreshSourceLocked(ctx, active)
+	return err
+}
+
+// refreshSourceLocked performs the single upstream leg: resolve → (login) →
+// download → store. The caller holds upstreamMu.
+func (s *Service) refreshSourceLocked(ctx context.Context, active string) (LoginResult, error) {
+	resolved, resolveErr := s.resolve(ctx, active)
+	if resolveErr != nil {
+		return s.recordFailure(active, resolveErr)
+	}
+	result, err := s.fetchResolved(ctx, resolved)
+	if err != nil {
+		return s.recordFailure(active, err)
 	}
 
 	now := time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err != nil {
-		s.probe.Error = err.Error()
+	// Only the active source drives the panel's probe; a cache-miss bootstrap for
+	// some other source must not overwrite what the UI is showing.
+	if s.Store.ActiveSource() == active {
+		s.probe.YAML = result.YAML
+		s.probe.Nodes = CountNodes(result.YAML)
+		s.probe.UserInfo = result.UserInfo
+		s.probe.Error = ""
 		s.probe.Source = active
 		s.probe.At = now * 1000
-		if strings.HasPrefix(active, "account:") {
-			_ = s.Store.UpdateAccountRuntime(strings.TrimPrefix(active, "account:"), "", 0, 0, nil, err.Error())
-		}
+	}
+	if strings.HasPrefix(active, "account:") {
+		_ = s.Store.UpdateAccountRuntime(strings.TrimPrefix(active, "account:"), result.SubscriptionURL, 0, now, result.UserInfo, "")
+	}
+	_ = s.Store.PutCache(model.Snapshot{
+		Source:    active,
+		URL:       result.SubscriptionURL,
+		Label:     resolved.Label,
+		FetchedAt: now,
+		YAML:      result.YAML,
+		RawYAML:   result.RawYAML,
+		UserInfo:  result.UserInfo,
+	})
+	return result, nil
+}
+
+// recordFailure keeps the previous snapshot usable: a failed refresh must not
+// blank the panel or the subscription URL.
+func (s *Service) recordFailure(active string, cause error) (LoginResult, error) {
+	now := time.Now().Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A failure while bootstrapping some other source must not mark the panel's
+	// own source as failed or make it look freshly fetched.
+	if s.Store.ActiveSource() == active {
+		s.probe.Error = cause.Error()
+		s.probe.Source = active
+		s.probe.At = now * 1000
 		if s.probe.YAML == "" {
 			if cached, _ := s.Store.Cache(active); cached != nil {
 				s.probe.YAML = cached.YAML
@@ -395,33 +439,51 @@ func (s *Service) Refresh(ctx context.Context, force bool) error {
 				s.probe.Source = cached.Source
 			}
 		}
-		return err
 	}
-
-	s.probe.YAML = yamlText
-	s.probe.Nodes = CountNodes(yamlText)
-	s.probe.UserInfo = userInfo
-	s.probe.Error = ""
-	s.probe.Source = active
-	s.probe.At = now * 1000
-
 	if strings.HasPrefix(active, "account:") {
-		_ = s.Store.UpdateAccountRuntime(strings.TrimPrefix(active, "account:"), finalURL, 0, now, userInfo, "")
+		_ = s.Store.UpdateAccountRuntime(strings.TrimPrefix(active, "account:"), "", 0, 0, nil, cause.Error())
 	}
-	label := resolved.Label
-	_ = s.Store.PutCache(model.Snapshot{
-		Source:    active,
-		URL:       finalURL,
-		Label:     label,
-		FetchedAt: now,
-		YAML:      yamlText,
-		RawYAML:   rawYAML,
-		UserInfo:  userInfo,
-	})
-	return nil
+	return LoginResult{}, cause
 }
 
-func (s *Service) Resolve(ctx context.Context, sourceName string) (resolvedSource, error) {
+// Snapshot is the read path behind /sub: it serves the stored snapshot and only
+// touches the provider when this source has nothing cached yet (first run, or a
+// source added while the server is up). That bootstrap goes through
+// refreshSourceLocked, so there is still exactly one upstream leg.
+func (s *Service) Snapshot(ctx context.Context, sourceName string) (LoginResult, error) {
+	if result, ok := s.cachedResult(sourceName); ok {
+		return result, nil
+	}
+	// Coalesce concurrent cache misses: a client retry storm must not become one
+	// login per request.
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
+	if result, ok := s.cachedResult(sourceName); ok {
+		return result, nil
+	}
+	return s.refreshSourceLocked(ctx, sourceName)
+}
+
+// cachedResult turns a stored snapshot back into a LoginResult. A row whose URL
+// no longer matches the source is treated as missing: the manual link was edited
+// or the account token was rotated, so serving it would ship the old profile.
+func (s *Service) cachedResult(sourceName string) (LoginResult, bool) {
+	cached, err := s.Store.Cache(sourceName)
+	if err != nil || cached == nil || cached.YAML == "" {
+		return LoginResult{}, false
+	}
+	if expected := s.sourceURL(sourceName); expected != "" && cached.URL != "" && cached.URL != expected {
+		return LoginResult{}, false
+	}
+	return LoginResult{
+		SubscriptionURL: cached.URL,
+		YAML:            cached.YAML,
+		RawYAML:         cached.RawYAML,
+		UserInfo:        cached.UserInfo,
+	}, true
+}
+
+func (s *Service) resolve(ctx context.Context, sourceName string) (resolvedSource, error) {
 	if sourceName == "" {
 		sourceName = "manual"
 	}
@@ -472,7 +534,7 @@ func (s *Service) Resolve(ctx context.Context, sourceName string) (resolvedSourc
 	}
 }
 
-func (s *Service) FetchResolved(ctx context.Context, source resolvedSource) (LoginResult, error) {
+func (s *Service) fetchResolved(ctx context.Context, source resolvedSource) (LoginResult, error) {
 	if source.Fresh != nil {
 		return *source.Fresh, nil
 	}
@@ -609,11 +671,13 @@ func (s *Service) PublicAccounts() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	subKeys, _ := s.Store.SubKeys()
 	return map[string]any{
 		"active":      active,
 		"manualUrl":   s.Store.ManualURL(),
 		"manualLabel": s.Store.ManualLabel(),
 		"accounts":    accounts,
+		"subKeys":     subKeys,
 	}, nil
 }
 
@@ -627,6 +691,12 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 	}
 	email := strings.TrimSpace(input.Email)
 	subURL := strings.TrimSpace(input.SubscriptionURL)
+	subKey := strings.TrimSpace(input.SubKey)
+	if subKey != "" {
+		if err := s.validateSubKey(subKey); err != nil {
+			return nil, err
+		}
+	}
 
 	// Per-kind required fields. Editing a password account may omit the password
 	// (blank means "keep the current one"), but a brand-new one must supply it.
@@ -685,6 +755,17 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 	if kind == model.KindPassword && existing == nil && input.Password == "" {
 		return nil, errors.New("新账号必须填写密码")
 	}
+	// Check key ownership before writing anything: a rejected key must not leave
+	// a half-updated account behind.
+	if subKey != "" {
+		owner, err := s.Store.SubKeyOwner(subKey)
+		if err != nil {
+			return nil, err
+		}
+		if owner != "" && owner != "account:"+id {
+			return nil, errors.New("该订阅key已被其他来源使用")
+		}
+	}
 
 	passwordEnc := ""
 	lastLogin, lastFetch := int64(0), int64(0)
@@ -699,11 +780,25 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 		subscriptionURL = existing.SubscriptionURL
 	}
 	if kind == model.KindPassword && input.Password != "" {
-		passwordEnc, err = s.Protector.Encrypt(input.Password)
-		if err != nil {
-			return nil, err
+		// Comparing against the stored plaintext matters now that the edit form
+		// prefills the password: saving the form unchanged must not look like a
+		// password change, or every edit would throw away the token and cache.
+		if existing != nil {
+			if current, decErr := s.Protector.Decrypt(existing.PasswordEnc); decErr == nil && current == input.Password {
+				passwordEnc = existing.PasswordEnc
+			} else {
+				passwordEnc, err = s.Protector.Encrypt(input.Password)
+				if err != nil {
+					return nil, err
+				}
+				passwordChanged = true
+			}
+		} else {
+			passwordEnc, err = s.Protector.Encrypt(input.Password)
+			if err != nil {
+				return nil, err
+			}
 		}
-		passwordChanged = existing != nil && input.Password != ""
 	}
 	if kind == model.KindLink {
 		// A link account keeps the URL the user typed; clearing credentials makes
@@ -745,7 +840,16 @@ func (s *Service) UpsertAccount(input AccountInput) (*model.Account, error) {
 		account.LastLogin, account.LastFetch = 0, 0
 		account.UserInfo = nil
 	}
-	_, _ = s.Store.EnsureSubKey("account:" + id)
+	if _, err := s.Store.EnsureSubKey("account:" + id); err != nil {
+		return nil, err
+	}
+	// A supplied key wins over the generated one; an empty one leaves whatever is
+	// already stored untouched so the subscription URL stays valid.
+	if subKey != "" {
+		if err := s.Store.SetSubKey("account:"+id, subKey); err != nil {
+			return nil, err
+		}
+	}
 	return &account, nil
 }
 
@@ -809,6 +913,27 @@ func (s *Service) DeleteAccount(id string) error {
 		return err
 	}
 	return nil
+}
+
+// AccountPassword decrypts the stored password so the edit form can prefill it
+// instead of asking the user to retype it. It is only reachable behind panel
+// auth and is never part of the accounts list payload.
+func (s *Service) AccountPassword(id string) (string, error) {
+	account, err := s.Store.Account(strings.TrimSpace(id))
+	if err != nil {
+		return "", err
+	}
+	if account == nil {
+		return "", errors.New("账号不存在")
+	}
+	if account.PasswordEnc == "" {
+		return "", errors.New("该账号没有保存密码")
+	}
+	plain, err := s.Protector.Decrypt(account.PasswordEnc)
+	if err != nil {
+		return "", errors.New("密码无法解密（可能来自其他机器）")
+	}
+	return plain, nil
 }
 
 func (s *Service) SetSource(sourceName, manualURL string) error {
@@ -953,7 +1078,75 @@ func withVariant(raw, v string) string {
 	return u.String()
 }
 
+// subKeyPattern is the shape accepted for a user-chosen subscription key. It is
+// deliberately narrower than a random key: the key travels in URLs, QR codes and
+// client configs, so no spaces, quotes or shell metacharacters.
+var subKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,64}$`)
+
+// validateSubKey checks a key typed by the user (never a generated one).
+func (s *Service) validateSubKey(key string) error {
+	if key == "" {
+		return errors.New("请填写订阅key")
+	}
+	if !subKeyPattern.MatchString(key) {
+		return errors.New("订阅key只能用字母、数字、- 和 _，长度 6–64 位")
+	}
+	if s.Config.AccessKey != "" && key == s.Config.AccessKey {
+		return errors.New("订阅key不能与面板口令相同")
+	}
+	return nil
+}
+
+// validSource rejects a source name that does not resolve to an existing source,
+// so a typo cannot create an orphan sub_keys row.
+func (s *Service) validSource(sourceName string) error {
+	switch {
+	case sourceName == "manual":
+		return nil
+	case strings.HasPrefix(sourceName, "account:"):
+		account, err := s.Store.Account(strings.TrimPrefix(sourceName, "account:"))
+		if err != nil {
+			return err
+		}
+		if account == nil {
+			return errors.New("账号不存在")
+		}
+		return nil
+	}
+	return errors.New("未知的数据源")
+}
+
+// SetSubKey stores a user-chosen key for one source. The key is stable until the
+// user changes it again; nothing else in the app rewrites it.
+func (s *Service) SetSubKey(sourceName, key string) (string, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		sourceName = s.Store.ActiveSource()
+	}
+	if err := s.validSource(sourceName); err != nil {
+		return "", err
+	}
+	key = strings.TrimSpace(key)
+	if err := s.validateSubKey(key); err != nil {
+		return "", err
+	}
+	if err := s.Store.SetSubKey(sourceName, key); err != nil {
+		if errors.Is(err, store.ErrSubKeyInUse) {
+			return "", errors.New("该订阅key已被其他来源使用")
+		}
+		return "", err
+	}
+	return key, nil
+}
+
 func (s *Service) RotateSubKey(sourceName string) (string, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		sourceName = s.Store.ActiveSource()
+	}
+	if err := s.validSource(sourceName); err != nil {
+		return "", err
+	}
 	return s.Store.RotateSubKey(sourceName)
 }
 
