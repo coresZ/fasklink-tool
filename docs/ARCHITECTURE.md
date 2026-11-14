@@ -72,10 +72,17 @@ Resolve -> FetchSubscription (UA, 4MB, HTTPS/SSRF guard)
 账号登录（只有 Apex / Speed v2 一种协议）：
 
 ```text
+配置           /apos/fl_apexv2.json → base64(XOR(json, 32B key)) → envelope JSON
+               /apos/fl_apex.json   → envelope JSON（回退）
 POST {api}/{v2 auth path}      {email,password} -> auth_data + token
-GET  /v2/feed/access-token     Authorization    -> 流量/到期
+GET  /v2/feed/access-token     Authorization    -> 流量/到期 + 一次性订阅键
 GET  /v2/feed/download?access_key=…            -> APXS 容器（mTLS）
 ```
+
+UA 用客户端真实值 `ua.net.flclient.app.apex/v<version>`（版本取 CDN 配置与内置版本中较大者）。
+`access_key` 是**一次性**的：第一次下载后立即失效，所以 `SubBases` 里每个 host 各领一把新键再请求，
+不能拿同一把键依次试。登录与下载分别用 `purpose=api`、`purpose=subscription` 两套证书。
+面板 DNS 是多条 A 记录、多数不可连，出站连接统一走并发拨号的 `ApexDialContext`。
 
 `400/401/403/404/410` 或 `invalid token` 会重登一次。账号里已存 `subscription_url` 时直接复用它，跳过登录。
 

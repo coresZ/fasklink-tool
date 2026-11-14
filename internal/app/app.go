@@ -111,8 +111,14 @@ func Run(opts Options) error {
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// A refresh is a synchronous Apex round trip: config, login, feed and a
+		// certificate-authenticated download. When the panel is slow each of the
+		// three calls can sit near its own timeout, so a 30 s write deadline cut
+		// the response off mid-refresh and the browser saw a dropped connection
+		// instead of the error text. The handler's own timeouts bound the work;
+		// this one only has to be the longer of the two.
+		WriteTimeout: 180 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {

@@ -1211,9 +1211,59 @@ CI（tag 推送触发的构建）                    build success / release suc
 
 **未动**：`flesa.apiv2.a047.com`、`b.xlovehuawei.com` 等机场域名，以及 `giffcores@gmail.com`（第三方面板示例）。
 
+## 2026-11-15（APK 7.3.1 复核）
+
+### internal/subscription/、internal/service/、internal/app/ — 按 7.3.1 复核，修掉拉不到订阅的四处
+
+**功能**：机场把 APK 从 7.2.3 升到 7.3.1，先确认本工具的证书、密钥、容器格式和链路是否仍然成立，再把不成立的改掉。
+
+**复核结论（实测，真实账号）**：
+
+- 三份 mTLS 客户端证书 + 私钥与 7.2.3 **逐字节相同**（`libapp.so` 内联 base64(JSON)，`profile_id` 仍是 7，CN 仍是 `Apex-7-*-client-*`）。
+- APXS AES-256 密钥**未变**；容器头 `APXS / 0x02 / keyId=1 / encVersion=1 / 12B nonce` 与 80 字节尾部**未变**，实测 34,578 B 密文解出 34,473 B Clash YAML。
+- 面板链路仍可用：`POST /v2/auth/token`、`GET /v2/feed/access-token`、`GET /v2/feed/download?access_key=`，登录走 `purpose=api`（`flaxapi.*`）、下载走 `purpose=subscription`（`flaxsub.*`），与 10 月结论一致。
+- 真正变了的四件事：
+  - **UA**：客户端真实值变成 `ua.net.flclient.app.apex/v7.3.1`；短式 `apex/<version>` 现在仍能过，但已不是客户端行为。
+  - **访问键一次性**：`/v2/feed/access-token` 返回 34 字符键，第一次 `/v2/feed/download` 之后即 `403 {"code":403103,"msg":"invalid token"}`（同一键第二次请求立刻失效）。
+  - **节点协议**：`vless` → `anytls`（`server=axbtapp-*.llguanglisf.com`，端口 14101–14170，`sni=*.frontlesscodes.com`，共用一个 password），节点数 74 → 72。
+  - **配置源**：新 APK 只认 `/apos/fl_apexv2.json`（2026-11-13 发布）；`/apos/fl_apex.json` 仍在、内容未变、`update.latest.android.version` 仍写 7.2.5。两份正文的**端点完全一致**，只有版本号和几个 feature 开关不同。
+
+**修改内容**：
+
+- `apex_keys.go`：`apexDefaultVersion` 7.2.3 → 7.3.1，注释改为「按 7.3.1 逐字节复核」。
+- `apex_config.go`（新增）+ `apex_keys.go`：**解出并接上 `fl_apexv2.json`**。该文件对外声称 `Content-Type: application/json`，实际是「同一份 v1 信封 JSON → XOR 32 字节 ASCII 密钥 → base64」，密钥 `SXvFkYO0txqJK8rt9eVXSHsz2FHEnoyN` 在 `libapp.so:0x7d724` 明文（紧挨 `parseLicenses`），属于混淆而非加密：解出的信封仍写 `"format":"apex-config-v1"`，payload 也是同一套 base64 JSON。新增 `DecodeApexConfig(body, obfuscated)`；`loadApexConfig` 每个 host 先试 v2 再退 v1。
+  - 关键突破手段（留给下次）：解码后的字节全部 < 0x80，且周期 32 的自相关明显，说明是「7-bit 明文 XOR 7-bit 密钥」；正文 90% 是 base64 字母表，于是**按列取「使该列全部落在 base64 字符集」的密钥字节**，32 个字节一次全中；再用信封前缀 `{"format":"apex-config-v1","payload":"`（38 字符 > 32）做密钥自洽校验，确认无误。
+  - v2 与 v1 的差异只有：`update.latest.*.version` 全部 7.2.5 → 7.3.1、新增 `password_reset_official_only` / `diagnostic_log_public_key` / `ignore_banned` 三个开关、changelog 换了一版。`domains` / `subscribe_domain` / `subscribe_path` / `panel_type` 逐字节相同。
+- `apex.go`（subscription）：新增 `ApexUserAgent(version)`，按客户端真实形态拼 `ua.net.flclient.app.apex/v<version>`。
+- `apex.go`（service）：`userAgent()` 改用全式 UA；版本取「CDN 配置版本」与「内置版本」中较大者——CDN 仍写 7.2.5，而本工具的密钥来自 7.3.1，报一个比素材更旧的版本号是客户端从未有过的形态。`LoadApexConfig` 先用全式 UA，失败再退 `apex/<version>`。
+- `apex.go`（service）：访问键改成**每次下载前现取**。`apexSession` 记住登录命中的 `Base`，新增 `apexSessionKey()`；`apexDownload()` 从「接收一个 key」改成「接收 session，`SubBases` 每个 host 各领一把新键」。原实现拿同一把键依次试多个 host，第一个 host 不管成功与否都会把键作废，第二个 host 必然 `invalid token`——这是本次刷新直接 403 的直接原因。
+- `dial.go`（新增）：`ApexDialContext` 并发拨号。面板 6 条 A 记录里常年只有 1 条可连，其余丢 SYN；`net.Dialer` 按序试，一条死记录就吃掉整个超时预算（实测同一请求因此耗 21 s 直至超时）。改为解析后对所有地址并发拨号、取最先连上的，其余连接关闭。
+- `apex.go`（service）+ `app.go`：`ApexTransport` 与配置 CDN 的 transport 都接上 `ApexDialContext` + `TLSHandshakeTimeout 10s`；登录/配置/下载超时 20/20/25 s → 40/20/45 s；`http.Server.WriteTimeout` 30 s → 180 s（一次刷新是串行的四步，30 s 会在刷新中途掐断连接，浏览器看到的是连接被重置而不是错误文案）。
+- 错误信息带上响应体：`apexSession` / `apexDownload` 的非 200 改用 `subscription.ErrorFromResponse`，`403` 现在会附 `{"code":403103,...,"msg":"invalid token"}`，不再是裸状态码。
+- `cmd/fastlink-tool/main.go`：`version` 1.2.1 → 1.3.0。
+
+**涉及文件**：`internal/subscription/apex_keys.go`、`internal/subscription/apex.go`、`internal/subscription/apex_config.go`（新增）、`internal/subscription/dial.go`（新增）、`internal/subscription/apex_config_test.go`（新增）、`internal/service/apex.go`、`internal/service/service.go`（注释）、`internal/service/apex_ua_test.go`（新增）、`internal/app/app.go`、`cmd/fastlink-tool/main.go`。
+
+**验证基线**：
+
+```text
+go vet ./... / go test ./...                全绿
+TestApexUserAgentIsFullClientString          4 用例（含「CDN 版本 7.2.5 不得低于内置 7.3.1」）
+TestVersionOrdering                          6 用例（7.10.0 > 7.9.9 等）
+源码 1.3.0 --dev + 真实账号端到端
+  登录            200  0.3 s
+  激活 + 刷新      200  2.4 s      （改前同一操作 80.6 s 且报 Apex 订阅下载失败）
+  /sub            200  44,564 B   72 个 anytls 节点 / 18 个策略组 / 330 条规则
+  state           nodes=72 healthy=true  流量 3.85 / 21.6 GiB，到期 1798054159
+  /sub?variant=raw 200  34,473 B   与解密出的 YAML 逐字节一致
+```
+
+**已知未解**：无。v2 配置已解出并接入，`LoadApexConfig` 现在命中 `fl_apexv2.json`（dev 日志会打 `apex config loaded source=…/fl_apexv2.json version=7.3.1`）。
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
 - `dist/.run/` 保留着旧 Node 版的 `accounts.json` / `cache/*.json`，是 Go 版首次启动自动迁移的数据源，未随旧产物一并清理。
 - 版本号：本次为修复提交，`cmd/fastlink-tool/main.go` 的 `version` 已递增到 `1.2.1`；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
+- 版本号（2026-11-15 接着改）：按 APK 7.3.1 复核后 `version` 已到 `1.3.0`，同样以 `scripts/build.ps1 -Version` / tag 为准。
 - `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）曾因 CRLF checkout 失败（`nameserver_test.go:34/56/157: key missing`），已由模板换行归一 + `.gitattributes` 修掉，`build.yml` 的 `-skip` 已移除。

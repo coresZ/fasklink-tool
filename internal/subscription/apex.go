@@ -203,6 +203,10 @@ func ApexTransport(purpose, proxyMode string) (*http.Transport, error) {
 			// The panel fronts a self-signed chain on some of its CDN hosts.
 			InsecureSkipVerify: true,
 		},
+		// The panel's DNS hands back six records of which one accepts; dial every
+		// address in parallel instead of waiting out the dead ones in turn.
+		DialContext:         ApexDialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConns:        8,
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     90 * time.Second,
@@ -221,8 +225,23 @@ func ApexPurposes() []string {
 }
 
 // ApexDefaultVersion is the client version the embedded material was recovered
-// from. The CDN answers only to `apex/<version>`; see LoadApexConfig.
+// from. It is the floor for the version sent in the User-Agent: the CDN config
+// can lag the shipped build, and a client that reports an older version than its
+// own material is the one shape the panel has never seen.
 func ApexDefaultVersion() string { return apexDefaultVersion }
+
+// ApexUserAgent builds the User-Agent the client actually sends:
+// `ua.net.flclient.app.apex/v<version>`. The `apex/<version>` short form used to
+// be accepted as well and still answers today, but it is not what the app
+// presents and the CDN's Cloudflare layer is the piece that decides — so every
+// outbound Apex request uses the full string, and only LoadApexConfig keeps the
+// short form as a fallback.
+func ApexUserAgent(version string) string {
+	if version == "" {
+		version = apexDefaultVersion
+	}
+	return "ua.net.flclient.app.apex/v" + version
+}
 
 // BuildAPXS assembles a container the way the panel does, with a zeroed trailer.
 // Used by tests to round-trip a known payload.

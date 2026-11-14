@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +32,31 @@ import (
 // pointing at public IPs, all sharing the account uuid. Those are not the real
 // nodes, so they must not be preferred.
 const (
-	apexConfigPath     = "/apos/fl_apex.json"
-	apexAuthPath       = "/v2/auth/token"
-	apexFeedPath       = "/v2/feed/access-token"
-	apexDownloadPath   = "/v2/feed/download?access_key="
+	apexAuthPath        = "/v2/auth/token"
+	apexFeedPath        = "/v2/feed/access-token"
+	apexDownloadPath    = "/v2/feed/download?access_key="
 	apexSubscribeMapKey = "/api/v1/client/subscribe?token="
 )
+
+// apexConfigFile is one remote-config file and how its body is encoded.
+type apexConfigFile struct {
+	Path string
+	// Obfuscated marks fl_apexv2.json: base64 of the envelope JSON XORed with a
+	// fixed key, served under a Content-Type that claims plain JSON.
+	Obfuscated bool
+}
+
+// apexConfigFiles is probed in order on every CDN host.
+//
+// v2 comes first because it is the file the 7.3.x client reads and the one the
+// provider keeps current (v2 last-modified 2026-11-13, v1 2026-10-27). Both
+// carry the same envelope and the same endpoints today; the difference that
+// matters is `update.latest.*.version`, where v1 still says 7.2.5 and v2 says
+// 7.3.1.
+var apexConfigFiles = []apexConfigFile{
+	{Path: subscription.ApexConfigPathV2, Obfuscated: true},
+	{Path: subscription.ApexConfigPathV1},
+}
 
 // apexConfig mirrors the fields of fl_apex.json the backend needs. The file is
 // base64(JSON) wrapped in an envelope, signed with Ed25519 (the signature is not
@@ -74,17 +95,54 @@ type ApexConfig struct {
 	PanelType    string
 }
 
-func (c ApexConfig) userAgent() string {
-	if c.Version == "" {
-		return "apex/" + subscription.ApexDefaultVersion()
+// apexClientVersion picks the version the User-Agent reports. The CDN config
+// advertises the latest *published* build, which trails the APK the certificate
+// and key material were taken from (2026-11-14: config says 7.2.5, the APK in
+// circulation is 7.3.1), so the newer of the two wins. Reporting a version older
+// than the material the request is signed with is the one combination the panel
+// has never had to accept.
+func apexClientVersion(configVersion string) string {
+	configVersion = strings.TrimSpace(configVersion)
+	if configVersion == "" {
+		return subscription.ApexDefaultVersion()
 	}
-	return "apex/" + c.Version
+	return newerVersion(configVersion, subscription.ApexDefaultVersion())
+}
+
+func (c ApexConfig) userAgent() string {
+	return subscription.ApexUserAgent(apexClientVersion(c.Version))
+}
+
+// newerVersion returns the higher of two dotted version strings.
+func newerVersion(a, b string) string {
+	if versionLess(a, b) {
+		return b
+	}
+	return a
+}
+
+func versionLess(a, b string) bool {
+	left, right := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(left) || i < len(right); i++ {
+		var x, y int
+		if i < len(left) {
+			x, _ = strconv.Atoi(strings.TrimSpace(left[i]))
+		}
+		if i < len(right) {
+			y, _ = strconv.Atoi(strings.TrimSpace(right[i]))
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return false
 }
 
 // LoadApexConfig fetches fl_apex.json from the first reachable CDN host.
 //
-// The User-Agent must be lowercase `apex/<version>`. An uppercase one is answered
-// with 403 by the CDN's Cloudflare layer, and a browser/Dart/okhttp UA gets 403 as
+// The request carries the client's own User-Agent, `ua.net.flclient.app.apex/v<version>`;
+// `apex/<version>` is retried as a fallback. An uppercase `Apex/` is answered with
+// 403 by the CDN's Cloudflare layer, and a browser/Dart/okhttp UA gets 403 as
 // well, which makes the endpoint look dead when it is not.
 func LoadApexConfig(ctx context.Context, timeout time.Duration) (ApexConfig, error) {
 	return loadApexConfig(ctx, timeout, subscription.ProxyDirect)
@@ -92,9 +150,13 @@ func LoadApexConfig(ctx context.Context, timeout time.Duration) (ApexConfig, err
 
 func loadApexConfig(ctx context.Context, timeout time.Duration, proxyMode string) (ApexConfig, error) {
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		timeout = 20 * time.Second
 	}
 	transport := &http.Transport{
+		// The CDN hosts share the panel's round-robin shape: several records, most
+		// of them dead from here. Race them the same way the panel transports do.
+		DialContext:         subscription.ApexDialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConns:        4,
 		MaxIdleConnsPerHost: 2,
 		IdleConnTimeout:     90 * time.Second,
@@ -107,56 +169,91 @@ func loadApexConfig(ctx context.Context, timeout time.Duration, proxyMode string
 	defer transport.CloseIdleConnections()
 	var errs []string
 	for _, base := range apexConfigSources {
-		target := strings.TrimRight(base, "/") + apexConfigPath
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-		if err != nil {
-			errs = append(errs, err.Error())
-			continue
+		origin := strings.TrimRight(base, "/")
+		var lastErr error = errors.New("没有可用的配置文件")
+		for _, file := range apexConfigFiles {
+			target := origin + file.Path
+			for _, ua := range apexConfigUserAgents() {
+				body, status, fetchErr := fetchApexConfig(ctx, client, target, ua)
+				if fetchErr != nil {
+					lastErr = fmt.Errorf("%s: %w", file.Path, fetchErr)
+					continue
+				}
+				if status != http.StatusOK {
+					lastErr = fmt.Errorf("%s: HTTP %d", file.Path, status)
+					continue
+				}
+				envelope, decodeErr := subscription.DecodeApexConfig(body, file.Obfuscated)
+				if decodeErr != nil {
+					lastErr = fmt.Errorf("%s: %w", file.Path, decodeErr)
+					continue
+				}
+				cfg, parseErr := parseApexConfig(envelope)
+				if parseErr != nil {
+					lastErr = fmt.Errorf("%s: %w", file.Path, parseErr)
+					continue
+				}
+				if len(cfg.Domains) == 0 {
+					lastErr = fmt.Errorf("%s: 配置里没有 domains", file.Path)
+					continue
+				}
+				resolved := ApexConfig{
+					Source:       target,
+					PanelType:    cfg.PanelType,
+					APIBases:     trimAll(cfg.Domains),
+					SubBases:     trimAll(cfg.SubscribeDomain),
+					DownloadPath: apexDownloadPath,
+				}
+				if latest, ok := cfg.Update.Latest["android"]; ok && latest.Version != "" {
+					resolved.Version = latest.Version
+				}
+				if mapped := cfg.SubscribePath[apexSubscribeMapKey]; mapped != "" {
+					resolved.DownloadPath = mapped
+				}
+				if len(resolved.SubBases) == 0 {
+					resolved.SubBases = resolved.APIBases
+				}
+				slog.Debug("apex config loaded",
+					"source", resolved.Source, "panel", resolved.PanelType,
+					"version", resolved.Version, "api", resolved.APIBases, "sub", resolved.SubBases)
+				return resolved, nil
+			}
 		}
-		req.Header.Set("User-Agent", "apex/"+subscription.ApexDefaultVersion())
-		resp, err := client.Do(req)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", base, err))
-			continue
-		}
-		body, readErr := subscription.ReadCapped(resp)
-		resp.Body.Close()
-		if readErr != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", base, readErr))
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			errs = append(errs, fmt.Sprintf("%s: HTTP %d", base, resp.StatusCode))
-			continue
-		}
-		cfg, parseErr := parseApexConfig(body)
-		if parseErr != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", base, parseErr))
-			continue
-		}
-		if len(cfg.Domains) == 0 {
-			errs = append(errs, fmt.Sprintf("%s: 配置里没有 domains", base))
-			continue
-		}
-		resolved := ApexConfig{
-			Source:       target,
-			PanelType:    cfg.PanelType,
-			APIBases:     trimAll(cfg.Domains),
-			SubBases:     trimAll(cfg.SubscribeDomain),
-			DownloadPath: apexDownloadPath,
-		}
-		if latest, ok := cfg.Update.Latest["android"]; ok && latest.Version != "" {
-			resolved.Version = latest.Version
-		}
-		if mapped := cfg.SubscribePath[apexSubscribeMapKey]; mapped != "" {
-			resolved.DownloadPath = mapped
-		}
-		if len(resolved.SubBases) == 0 {
-			resolved.SubBases = resolved.APIBases
-		}
-		return resolved, nil
+		errs = append(errs, fmt.Sprintf("%s: %v", origin, lastErr))
 	}
 	return ApexConfig{}, fmt.Errorf("没有可用的 Apex 配置源: %s", strings.Join(errs, "; "))
+}
+
+// apexConfigUserAgents are the User-Agent spellings the config CDN has answered
+// to. The full client string is what the app sends; the short `apex/<version>`
+// form is kept as a second attempt because the Cloudflare rule in front of the
+// CDN has flipped between the two before, and a config fetch is the one request
+// that cannot afford to guess wrong.
+func apexConfigUserAgents() []string {
+	version := subscription.ApexDefaultVersion()
+	return []string{
+		subscription.ApexUserAgent(version),
+		"apex/" + version,
+	}
+}
+
+// fetchApexConfig performs one config GET and returns the capped body.
+func fetchApexConfig(ctx context.Context, client *http.Client, target, userAgent string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	body, readErr := subscription.ReadCapped(resp)
+	if readErr != nil {
+		return nil, resp.StatusCode, readErr
+	}
+	return body, resp.StatusCode, nil
 }
 
 func parseApexConfig(body []byte) (apexConfig, error) {
@@ -198,7 +295,7 @@ func (s *Service) apexConfig(ctx context.Context) (ApexConfig, error) {
 	if s.apexCfg.Source != "" && time.Since(s.apexCfgAt) < apexConfigTTL {
 		return s.apexCfg, nil
 	}
-	cfg, err := loadApexConfig(ctx, 15*time.Second, s.proxyMode())
+	cfg, err := loadApexConfig(ctx, 20*time.Second, s.proxyMode())
 	if err != nil {
 		return ApexConfig{}, err
 	}
@@ -265,6 +362,9 @@ func (s *Service) ResetTransports() {
 // apexSession runs the /v2 login flow and returns the access key plus the account
 // record the panel reports.
 type apexSession struct {
+	// Base is the API origin that answered the login; the feed endpoint has to be
+	// asked on the same one.
+	Base      string
 	AuthData  string
 	AccessKey string
 	Feed      map[string]any
@@ -275,7 +375,11 @@ func (s *Service) apexSession(ctx context.Context, cfg ApexConfig, email, passwo
 	if err != nil {
 		return nil, err
 	}
-	apiClient := &http.Client{Timeout: 20 * time.Second, Transport: transport}
+	// The panel sits behind Cloudflare and answers in ~0.5 s when healthy, but it
+	// has been seen to hold the connection for >20 s while a challenge or an
+	// upstream reroute settles. A timeout shorter than the server's own patience
+	// turns a slow-but-working login into a hard failure.
+	apiClient := &http.Client{Timeout: 40 * time.Second, Transport: transport}
 	if s.Transport != nil {
 		apiClient.Transport = s.Transport
 	}
@@ -303,7 +407,7 @@ func (s *Service) apexSession(ctx context.Context, cfg ApexConfig, email, passwo
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			errs = append(errs, fmt.Sprintf("%s: HTTP %d", base, resp.StatusCode))
+			errs = append(errs, fmt.Sprintf("%s: %v", base, subscription.ErrorFromResponse(resp, body)))
 			continue
 		}
 		var payload struct {
@@ -320,7 +424,7 @@ func (s *Service) apexSession(ctx context.Context, cfg ApexConfig, email, passwo
 			errs = append(errs, fmt.Sprintf("%s: 登录返回缺少 auth_data/token", base))
 			continue
 		}
-		session := &apexSession{AuthData: payload.Data.AuthData, AccessKey: payload.Data.Token}
+		session := &apexSession{Base: base, AuthData: payload.Data.AuthData, AccessKey: payload.Data.Token}
 
 		feedReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+apexFeedPath, nil)
 		feedReq.Header.Set("User-Agent", ua)
@@ -343,13 +447,72 @@ func (s *Service) apexSession(ctx context.Context, cfg ApexConfig, email, passwo
 	return nil, fmt.Errorf("Apex 登录失败: %s", strings.Join(errs, "; "))
 }
 
+// apexSessionKey mints a fresh access key for an existing login. The feed
+// endpoint rotates the key on every call, so asking immediately before each
+// download is what keeps a single-use key valid for exactly one request.
+func (s *Service) apexSessionKey(ctx context.Context, cfg ApexConfig, session *apexSession) (string, error) {
+	if session == nil || session.AuthData == "" || session.Base == "" {
+		return "", errors.New("没有可用的登录会话")
+	}
+	transport, err := s.apexTransport("api")
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 40 * time.Second, Transport: transport}
+	if s.Transport != nil {
+		client.Transport = s.Transport
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, session.Base+apexFeedPath, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", cfg.userAgent())
+	req.Header.Set("Authorization", session.AuthData)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	body, readErr := subscription.ReadCapped(resp)
+	resp.Body.Close()
+	if readErr != nil {
+		return "", readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", subscription.ErrorFromResponse(resp, body)
+	}
+	var payload struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", errors.New("订阅凭证返回非 JSON")
+	}
+	if payload.Data.Token == "" {
+		return "", errors.New("订阅凭证返回缺少 token")
+	}
+	return payload.Data.Token, nil
+}
+
 // apexDownload fetches the APXS container and decrypts it.
-func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, accessKey string) (string, subscription.ApexHeader, string, error) {
+//
+// The access key is single-use on the current panel: the first request through
+// /v2/feed/download invalidates it, and that includes an attempt that dies at a
+// CDN edge (the next host then answers 403 "invalid token"). Testing SubBases in
+// order therefore has to mint a key per host, which is why this takes the
+// session instead of a key string.
+func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, session *apexSession) (string, subscription.ApexHeader, string, error) {
+	if session == nil {
+		return "", subscription.ApexHeader{}, "", errors.New("没有可用的登录会话")
+	}
 	transport, err := s.apexTransport("subscription")
 	if err != nil {
 		return "", subscription.ApexHeader{}, "", err
 	}
-	subClient := &http.Client{Timeout: 25 * time.Second, Transport: transport}
+	// Same reasoning as the login client: the download is a single 34 KB body and
+	// normally returns in under a second, so a 45 s budget only ever fires on a
+	// genuinely stalled connection.
+	subClient := &http.Client{Timeout: 45 * time.Second, Transport: transport}
 	if s.Transport != nil {
 		subClient.Transport = s.Transport
 	}
@@ -361,7 +524,14 @@ func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, accessKey st
 
 	var errs []string
 	for _, base := range cfg.SubBases {
-		target := base + cfg.DownloadPath + separator + accessKey
+		key := session.AccessKey
+		if fresh, keyErr := s.apexSessionKey(ctx, cfg, session); keyErr == nil && fresh != "" {
+			key = fresh
+		} else if key == "" {
+			errs = append(errs, fmt.Sprintf("%s: 没有订阅凭证: %v", base, keyErr))
+			continue
+		}
+		target := base + cfg.DownloadPath + separator + key
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if reqErr != nil {
 			errs = append(errs, reqErr.Error())
@@ -380,7 +550,7 @@ func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, accessKey st
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			errs = append(errs, fmt.Sprintf("%s: HTTP %d", base, resp.StatusCode))
+			errs = append(errs, fmt.Sprintf("%s: %v", base, subscription.ErrorFromResponse(resp, body)))
 			continue
 		}
 		if !subscription.IsAPXS(body) {
@@ -429,7 +599,7 @@ func (s *Service) LoginApex(ctx context.Context, account model.Account) (*LoginR
 	if err != nil {
 		return nil, err
 	}
-	raw, header, downloadURL, err := s.apexDownload(ctx, cfg, session.AccessKey)
+	raw, header, downloadURL, err := s.apexDownload(ctx, cfg, session)
 	if err != nil {
 		// The endpoints may have moved; refetch the config next time instead of
 		// retrying the same stale domains until the TTL expires.

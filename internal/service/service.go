@@ -254,8 +254,10 @@ func (s *Service) decodeInline(input string) (LoginResult, error) {
 	return LoginResult{YAML: yamlText, RawYAML: raw}, nil
 }
 
-// apexUserAgent is the `apex/<version>` User-Agent the CDN insists on. The
-// version comes from the cached remote config and only falls back to the
+// apexUserAgent is the `ua.net.flclient.app.apex/v<version>` User-Agent the
+// client itself sends. The short `apex/<version>` form still answers, but it is
+// not what the app presents, so it is only used as a config-fetch fallback.
+// The version comes from the cached remote config and only falls back to the
 // embedded default before the first config load.
 func (s *Service) apexUserAgent() string {
 	s.apexMu.Lock()

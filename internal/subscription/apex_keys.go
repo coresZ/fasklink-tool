@@ -1,14 +1,27 @@
 package subscription
 
-// Apex / Speed client material recovered from libapp.so (com.flapp.clients.apex 7.2.3).
+// Apex / Speed client material recovered from libapp.so (com.flapp.clients.apex).
 // The app ships three mutual-TLS client profiles plus a 32-byte AES-256 key; both are
 // base64 constants in the Dart AOT string pool, not fetched at runtime. Keeping them
 // here mirrors keys.go: a future app build only requires updating this one file.
+//
+// Re-checked byte-for-byte against 7.3.1 (2026-11-14): the three profiles, their
+// private keys and the APXS AES key are unchanged from 7.2.3, and the container
+// header (APXS/0x02/keyId=1/encVersion=1/12-byte nonce/80-byte trailer) is unchanged
+// as well. Only the client version moved, hence the bump below.
 
 const (
-	apexAESKeyHex = "c3a98005298bad8b44f723ad4fe07c05109b4c7ce7a9fc9a166d4b3cd29c94d0"
-	apexDefaultVersion = "7.2.3"
+	apexAESKeyHex      = "c3a98005298bad8b44f723ad4fe07c05109b4c7ce7a9fc9a166d4b3cd29c94d0"
+	apexDefaultVersion = "7.3.1"
 )
+
+// apexConfigXORKey obfuscates /apos/fl_apexv2.json. That file advertises
+// Content-Type: application/json but is base64 of the same envelope JSON XORed
+// with this 32-byte ASCII string (libapp.so 0x7d724, plain text, next to
+// "parseLicenses" in the Dart string pool). It is obfuscation, not encryption:
+// the decoded envelope still says "apex-config-v1" and its payload is the same
+// base64 JSON the v1 file serves.
+const apexConfigXORKey = "SXvFkYO0txqJK8rt9eVXSHsz2FHEnoyN"
 
 const apexCertApi = `-----BEGIN CERTIFICATE-----
 MIIEXjCCAsagAwIBAgIUN0mFt5EeA9hjUWPmu6trp9GykBcwDQYJKoZIhvcNAQEL
