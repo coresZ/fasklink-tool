@@ -1478,5 +1478,5 @@ TestLoginApexPrefersSubscriptionHeaderUserinfo     header expire 1798025359 胜�
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。
 - `dist/.run/` 保留着旧 Node 版的 `accounts.json` / `cache/*.json`，是 Go 版首次启动自动迁移的数据源，未随旧产物一并清理。
-- 版本号：`cmd/fastlink-tool/main.go` 的 `version` 现为 `1.3.0`（上游 1.2.3，本次按 APK 7.3.1 适配再进一档）；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
+- 版本号：`cmd/fastlink-tool/main.go` 的 `version` 现为 `1.5.1`（上游 1.2.3 → 按 APK 7.3.1 适配后的 1.3.0 → 1.5.1）；发布仍以 `scripts/build.ps1 -Version` 或 tag 注入为准。
 - `internal/subscription` 的 3 个 `nameserver` 测试（`TestUpstreamNameserversPrependedBeforeDefaults` / `...DedupedAgainstDefaults` / `TestNoUpstreamNameserversLeavesDefaultsAdjacent`）曾因 CRLF checkout 失败（`nameserver_test.go:34/56/157: key missing`），已由模板换行归一 + `.gitattributes` 修掉，`build.yml` 的 `-skip` 已移除。
