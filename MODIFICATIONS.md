@@ -1450,6 +1450,30 @@ TestVersionOrdering                          6 用例（7.10.0 > 7.9.9 等）
 
 **已知未解**：无。v2 配置已解出并接入，`LoadApexConfig` 现在命中 `fl_apexv2.json`（dev 日志会打 `apex config loaded source=…/fl_apexv2.json version=7.3.1`）。
 
+### internal/service — Apex 账号的流量/到期改取订阅响应头
+
+**问题**：同一份订阅，面板给两个不同的到期时间。`/v2/feed/access-token` 的 `expired_at` 是 `1798054159`（上海 2026-12-24 03:29），而 `/v2/feed/download` 响应头 `Subscription-Userinfo` 的 `expire` 是 `1798025359`（上海 2026-12-23 19:29）——**整整差 8 小时，即 UTC+8 的偏移量**，落到界面上就是到期日期差一天。
+
+**修改内容**：
+
+- `apexDownload` 返回值改成 `*apexDownloadResult`，把响应头里的 `Subscription-Userinfo` 解析成 `UserInfo` 一并带出；非 200 分支不动。
+- `LoginApex` 改为优先用该响应头，`/v2/feed/access-token` 只用来补空字段（新增 `preferUserInfo`）。`fetchApexYAML`（复用已存订阅链接的那条路）本来就取响应头，两条路现在口径一致。
+- 顺带的好处：上传/下载也变成下载那一刻的实时值，不再是登录时的快照。
+
+**涉及文件**：`internal/service/apex.go`（`apexDownloadResult`、`apexDownload`、`LoginApex`、`preferUserInfo`）、`internal/service/apex_userinfo_test.go`（新增）。
+
+**验证基线**：
+
+```text
+go vet ./... / go test ./...                       全绿
+TestPreferUserInfo                                 主值优先、空字段回落、不改原值
+TestLoginApexPrefersSubscriptionHeaderUserinfo     header expire 1798025359 胜过 feed 1798054159
+真机（源码 1.3.0，真实账号）
+  /sub header        upload=4135963817; download=23194877012; total=107606966272; expire=1798025359
+  state.userInfo     同上
+  上海时间           2026-12-23 19:29:19（改前 2026-12-24 03:29:19）
+```
+
 ## 已知取舍
 - 滚动条在 Chromium 无法同时做到「自定义 thumb 留边」和「保留原生箭头按钮」，本次按规范优先轨道透明与自定义 thumb，箭头按钮在 WebKit 分支被移除。
 - 用 overlay 滚动条的平台（macOS 默认、Chrome headless）不占位，`offsetWidth-clientWidth` 为 0，轨道像素验证需 `headless:false`。

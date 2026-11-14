@@ -494,6 +494,20 @@ func (s *Service) apexSessionKey(ctx context.Context, cfg ApexConfig, session *a
 	return payload.Data.Token, nil
 }
 
+// apexDownloadResult is one successful /v2/feed/download.
+type apexDownloadResult struct {
+	YAML   string
+	Header subscription.ApexHeader
+	URL    string
+	// UserInfo is parsed from the panel's Subscription-Userinfo response header:
+	// it is the traffic block the panel publishes to clients, and the only one
+	// whose `expire` agrees with what the panel's own subscription reports. The
+	// `/v2/feed/access-token` `expired_at` on this panel sits 8 hours later
+	// (2026-11-15: feed 1798054159 vs header 1798025359 — the feed value is
+	// shifted by a whole UTC+8 offset), which moved the expiry date by one day.
+	UserInfo *model.UserInfo
+}
+
 // apexDownload fetches the APXS container and decrypts it.
 //
 // The access key is single-use on the current panel: the first request through
@@ -501,13 +515,13 @@ func (s *Service) apexSessionKey(ctx context.Context, cfg ApexConfig, session *a
 // CDN edge (the next host then answers 403 "invalid token"). Testing SubBases in
 // order therefore has to mint a key per host, which is why this takes the
 // session instead of a key string.
-func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, session *apexSession) (string, subscription.ApexHeader, string, error) {
+func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, session *apexSession) (*apexDownloadResult, error) {
 	if session == nil {
-		return "", subscription.ApexHeader{}, "", errors.New("没有可用的登录会话")
+		return nil, errors.New("没有可用的登录会话")
 	}
 	transport, err := s.apexTransport("subscription")
 	if err != nil {
-		return "", subscription.ApexHeader{}, "", err
+		return nil, err
 	}
 	// Same reasoning as the login client: the download is a single 34 KB body and
 	// normally returns in under a second, so a 45 s budget only ever fires on a
@@ -564,9 +578,14 @@ func (s *Service) apexDownload(ctx context.Context, cfg ApexConfig, session *ape
 			errs = append(errs, fmt.Sprintf("%s: %v", base, decryptErr))
 			continue
 		}
-		return yamlText, header, target, nil
+		return &apexDownloadResult{
+			YAML:     yamlText,
+			Header:   header,
+			URL:      target,
+			UserInfo: subscription.ParseUserInfo(resp.Header.Get("Subscription-Userinfo")),
+		}, nil
 	}
-	return "", subscription.ApexHeader{}, "", fmt.Errorf("Apex 订阅下载失败: %s", strings.Join(errs, "; "))
+	return nil, fmt.Errorf("Apex 订阅下载失败: %s", strings.Join(errs, "; "))
 }
 
 func headOf(body []byte, n int) string {
@@ -599,26 +618,51 @@ func (s *Service) LoginApex(ctx context.Context, account model.Account) (*LoginR
 	if err != nil {
 		return nil, err
 	}
-	raw, header, downloadURL, err := s.apexDownload(ctx, cfg, session)
+	download, err := s.apexDownload(ctx, cfg, session)
 	if err != nil {
 		// The endpoints may have moved; refetch the config next time instead of
 		// retrying the same stale domains until the TTL expires.
 		s.invalidateApexConfig()
 		return nil, err
 	}
-	yamlText, err := subscription.ApplyTemplate(raw)
+	yamlText, err := subscription.ApplyTemplate(download.YAML)
 	if err != nil {
 		return nil, err
 	}
 	result := &LoginResult{
-		SubscriptionURL: downloadURL,
+		SubscriptionURL: download.URL,
 		YAML:            yamlText,
-		RawYAML:         raw,
-		UserInfo:        apexUserInfo(session.Feed),
-		Apex:            &header,
+		RawYAML:         download.YAML,
+		UserInfo:        preferUserInfo(download.UserInfo, apexUserInfo(session.Feed)),
+		Apex:            &download.Header,
 	}
 	_ = s.Store.UpdateAccountRuntime(account.ID, result.SubscriptionURL, time.Now().Unix(), 0, result.UserInfo, "")
 	return result, nil
+}
+
+// preferUserInfo keeps what the panel published on the subscription response and
+// only borrows the fields it left empty from the login snapshot.
+func preferUserInfo(primary, fallback *model.UserInfo) *model.UserInfo {
+	if primary == nil {
+		return fallback
+	}
+	if fallback == nil {
+		return primary
+	}
+	merged := *primary
+	if merged.Upload == 0 {
+		merged.Upload = fallback.Upload
+	}
+	if merged.Download == 0 {
+		merged.Download = fallback.Download
+	}
+	if merged.Total == 0 {
+		merged.Total = fallback.Total
+	}
+	if merged.Expire == 0 {
+		merged.Expire = fallback.Expire
+	}
+	return &merged
 }
 
 // apexUserInfo maps /v2/feed/access-token onto the same traffic block the rest
